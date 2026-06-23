@@ -23,10 +23,23 @@ Destructive actions are gated behind explicit human approval by default.
 ```bash
 cd /workspace/ollamacode
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate        # bash / zsh
+# . .venv/bin/activate           # POSIX sh (dash)
 pip install -e ".[dev]"
-cp .env.example .env       # tweak as needed
+cp .env.example .env              # tweak as needed
 ```
+
+If `source` isn't available, use the dot form (`. .venv/bin/activate`).
+If the venv's `activate` script is missing, copy it from the system
+template and substitute the real path:
+
+```bash
+cp /usr/lib/python3.11/venv/scripts/common/activate .venv/bin/activate
+sed -i "s|__VENV_DIR__|$(pwd)/.venv|g; s|__VENV_BIN_NAME__|bin|g" .venv/bin/activate
+```
+
+(You can also skip activation entirely and invoke the binaries directly:
+`.venv/bin/codeclaw`, `.venv/bin/pytest`, etc.)
 
 Make sure Ollama is running and the configured model is pulled:
 
