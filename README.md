@@ -155,3 +155,77 @@ ruff check src tests
 ## License
 
 MIT.
+
+## Standalone binary (no Python required on target)
+
+If you just want to drop `codeclaw` onto a machine without installing Python,
+build a single-file executable with [PyInstaller](https://pyinstaller.org/):
+
+```bash
+# One-time setup (Linux/macOS):
+cd /workspace/ollamacode
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"      # installs pyinstaller via the [dev] extra
+
+# Build:
+pyinstaller --noconfirm codeclaw.spec
+
+# Result:
+ls -lh dist/codeclaw         # single ~30 MB executable
+```
+
+Run it on the target machine (any modern Linux x86_64, macOS 12+, or
+Windows 10+):
+
+```bash
+./codeclaw --version
+./codeclaw --check
+./codeclaw "add a Makefile that runs pytest"
+```
+
+### Cross-platform builds
+
+PyInstaller produces a binary for the **host platform** — to ship to another
+OS, build on that OS (or use a CI matrix). A minimal GitHub Actions snippet:
+
+```yaml
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e ".[dev]"
+      - run: pyinstaller --noconfirm codeclaw.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeclaw-${{ matrix.os }}
+          path: dist/codeclaw*
+```
+
+### Files involved
+
+| File              | Purpose                                                      |
+|-------------------|--------------------------------------------------------------|
+| `codeclaw.spec`   | PyInstaller build recipe (entry, datas, hidden imports).     |
+| `build_entry.py`  | Shim that bootstraps the `codeclaw` package for the frozen binary. |
+| `dist/codeclaw`   | Output binary. Rename / rebrand freely.                       |
+
+### Notes & caveats
+
+- **First run is slow.** The binary unpacks itself into a temp dir; expect
+  ~1–2 s startup overhead. Subsequent invocations are fast because the OS
+  caches the temp dir.
+- **Antivirus false positives.** Some AV engines flag PyInstaller binaries
+  as suspicious. Sign the binary (`codesign` on macOS, signtool on Windows)
+  for production releases.
+- **Static analysis limits.** If a runtime `ImportError` appears for a
+  module, add it to `hiddenimports` in `codeclaw.spec` and rebuild.
+- **Source files only.** `.env`, `AGENTS.md`, `MEMORY.md` are read from the
+  **current working directory** at runtime — they are not bundled. The
+  binary stays self-contained otherwise.
