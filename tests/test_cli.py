@@ -166,6 +166,7 @@ def test_slash_command_helpers():
     assert cli._checkpoint_name_from_command("/checkpoint before change") == "before change"
     assert cli._restore_id_from_command("/restore abc123") == "abc123"
     assert cli._resume_id_from_command("/resume abc123") == "abc123"
+    assert cli._set_args_from_command("/set model qwen3:14b") == ("model", "qwen3:14b")
 
 
 def test_command_palette_renders(capsys):
@@ -177,6 +178,9 @@ def test_command_palette_renders(capsys):
     assert "/plan" in out
     assert "/sessions" in out
     assert "/hooks" in out
+    assert "/init" in out
+    assert "/compact" in out
+    assert "/todo" in out
 
 
 def test_tools_and_permissions_render(capsys):
@@ -257,6 +261,39 @@ def test_hooks_render(tmp_path, capsys):
     assert "Hooks" in out
     assert "SessionStart" in out
     assert "PreToolUse" in out
+
+
+def test_init_config_and_hook_examples(tmp_path, capsys):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+
+    created = cli._init_project(settings)
+    ok, key, value = cli._set_project_default(settings, "host", "http://x:11434")
+    hook_files = cli._write_hook_examples(settings)
+    cli._print_config(settings)
+
+    out = capsys.readouterr().out
+    assert tmp_path / "AGENTS.md" in created
+    assert ok
+    assert key == "ollama_host"
+    assert value == "http://x:11434"
+    assert (tmp_path / ".codeclaw" / "settings.json").exists()
+    assert all(path.exists() for path in hook_files)
+    assert "http://x:11434" in out
+
+
+def test_compact_session_and_todos(tmp_path, capsys):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    session = cli._new_session(settings)
+    result = SimpleNamespace(final_message="finished work", completed=True, reason="done", steps=[], total_tokens=0)
+    cli._append_session_turn(settings, session, "do thing", result, plan_mode=False)
+
+    summary = cli._compact_session(settings, session)
+    cli._print_todos(session)
+
+    out = capsys.readouterr().out
+    assert "do thing" in summary
+    assert "Session Todo" in out
+    assert len(session["turns"]) == 1
 
 
 def test_session_context_includes_prior_turns(tmp_path):

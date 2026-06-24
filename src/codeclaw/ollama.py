@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -268,6 +269,7 @@ class OllamaClient:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.2,
         json_mode: bool = False,
+        on_delta: Callable[[str, str], None] | None = None,
     ) -> ChatResponse:
         """Send a chat request and parse the response.
 
@@ -278,7 +280,7 @@ class OllamaClient:
         payload: dict[str, Any] = {
             "model": model,
             "messages": [m.to_ollama() for m in messages],
-            "stream": False,
+            "stream": on_delta is not None,
             "options": {"temperature": temperature},
         }
         if await self.model_supports_thinking(model):
@@ -288,20 +290,23 @@ class OllamaClient:
         if json_mode:
             payload["format"] = "json"
 
-        try:
-            r = await self._client.post(f"{self.host}/api/chat", json=payload)
-        except httpx.HTTPError as exc:
-            raise OllamaError(f"Network error talking to Ollama at {self.host}: {exc}") from exc
-
-        if r.status_code != 200:
-            # Surface server-side error text verbatim; it's almost always useful.
+        if on_delta is not None:
+            data = await self._chat_stream(payload, on_delta)
+        else:
             try:
-                detail = r.json()
-            except json.JSONDecodeError:
-                detail = r.text
-            raise OllamaError(f"Ollama returned {r.status_code}: {detail}")
+                r = await self._client.post(f"{self.host}/api/chat", json=payload)
+            except httpx.HTTPError as exc:
+                raise OllamaError(f"Network error talking to Ollama at {self.host}: {exc}") from exc
 
-        data = r.json()
+            if r.status_code != 200:
+                # Surface server-side error text verbatim; it's almost always useful.
+                try:
+                    detail = r.json()
+                except json.JSONDecodeError:
+                    detail = r.text
+                raise OllamaError(f"Ollama returned {r.status_code}: {detail}")
+
+            data = r.json()
         msg = data.get("message", {}) or {}
         content = msg.get("content", "") or ""
         thinking = msg.get("thinking", "") or ""
@@ -340,3 +345,37 @@ class OllamaClient:
             prompt_tokens=data.get("prompt_eval_count", 0),
             completion_tokens=data.get("eval_count", 0),
         )
+
+    async def _chat_stream(self, payload: dict[str, Any], on_delta: Callable[[str, str], None]) -> dict[str, Any]:
+        content_parts: list[str] = []
+        thinking_parts: list[str] = []
+        final: dict[str, Any] = {}
+        try:
+            async with self._client.stream("POST", f"{self.host}/api/chat", json=payload) as response:
+                if response.status_code != 200:
+                    text = await response.aread()
+                    raise OllamaError(f"Ollama returned {response.status_code}: {text.decode('utf-8', errors='replace')}")
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    final = chunk
+                    msg = chunk.get("message", {}) or {}
+                    content = msg.get("content") or ""
+                    thinking = msg.get("thinking") or ""
+                    if thinking:
+                        thinking_parts.append(thinking)
+                        on_delta("thinking", thinking)
+                    if content:
+                        content_parts.append(content)
+                        on_delta("content", content)
+        except httpx.HTTPError as exc:
+            raise OllamaError(f"Network error talking to Ollama at {self.host}: {exc}") from exc
+        message = dict(final.get("message", {}) or {})
+        message["content"] = "".join(content_parts) or message.get("content", "")
+        message["thinking"] = "".join(thinking_parts) or message.get("thinking", "")
+        final["message"] = message
+        return final

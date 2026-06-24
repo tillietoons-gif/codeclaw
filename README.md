@@ -41,6 +41,13 @@ sed -i "s|__VENV_DIR__|$(pwd)/.venv|g; s|__VENV_BIN_NAME__|bin|g" .venv/bin/acti
 (You can also skip activation entirely and invoke the binaries directly:
 `.venv/bin/codeclaw`, `.venv/bin/pytest`, etc.)
 
+To install a small `~/.local/bin/codeclaw` launcher from the current Python
+environment:
+
+```bash
+codeclaw install
+```
+
 Make sure Ollama is running and the configured model is pulled:
 
 ```bash
@@ -66,12 +73,18 @@ Inside the interactive console, commands start with `/`:
 ```text
 /help            show available slash commands
 /status          show current model, project, approval mode, and session
+/init            create AGENTS.md and .codeclaw/settings.json defaults
+/config          show project configuration defaults
+/set KEY VALUE   set defaults like model, host, max_steps, temperature
 /plan            toggle read-only planning mode
+/compact         compact saved session context
+/todo            show the current session task list
 /sessions        list saved sessions in .codeclaw/sessions
 /current         show current session details
 /resume ID       resume a saved session
 /memory          show loaded AGENTS.md and MEMORY.md context
 /hooks           show configured project lifecycle hooks
+/hook-example    write example hook templates
 /tools           list available tools
 /permissions     show approval rules for tools
 /diff            show current git diff summary
@@ -109,6 +122,10 @@ Project hooks can be configured in `.codeclaw/settings.json`:
 Hook commands run from the project directory and receive JSON on stdin. A
 non-zero `PreToolUse` exit blocks the tool call; a non-zero
 `UserPromptSubmit` exit blocks the prompt.
+
+The interactive prompt uses a multiline editor when `prompt-toolkit` is
+installed. Approval prompts support allow once (`y`), allow always for that
+tool (`a`), and deny (`n`).
 
 ## Tools
 

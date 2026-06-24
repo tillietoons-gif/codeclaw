@@ -24,6 +24,7 @@ middle of the conversation when it grows too long.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import uuid
@@ -114,12 +115,16 @@ class CodeClawAgent:
             messages = self._trim_messages(messages, system, objective)
 
             try:
-                resp = await self.client.chat(
-                    model=self.settings.model,
-                    messages=messages,
-                    tools=self.registry.schemas(),
-                    temperature=self.settings.temperature,
-                )
+                kwargs = {
+                    "model": self.settings.model,
+                    "messages": messages,
+                    "tools": self.registry.schemas(),
+                    "temperature": self.settings.temperature,
+                }
+                streamed = "on_delta" in inspect.signature(self.client.chat).parameters
+                if streamed:
+                    kwargs["on_delta"] = self._log_delta
+                resp = await self.client.chat(**kwargs)
             except Exception as exc:
                 self.log(f"[error] Ollama call failed: {exc}")
                 result = RunResult(objective, "", steps, total_tokens, False, f"error: {exc}")
@@ -127,7 +132,7 @@ class CodeClawAgent:
                 return result
 
             total_tokens += resp.prompt_tokens + resp.completion_tokens
-            self._log_assistant(resp)
+            self._log_assistant(resp, streamed=streamed)
             record = StepRecord(step=step_idx, assistant_text=resp.content, tool_calls=resp.tool_calls)
             messages.append(
                 ChatMessage(
@@ -253,12 +258,18 @@ class CodeClawAgent:
             return await result
         return result
 
-    def _log_assistant(self, resp: ChatResponse) -> None:
-        if resp.thinking:
+    def _log_delta(self, kind: str, text: str) -> None:
+        prefix = "  ?" if kind == "thinking" else "  >"
+        for line in text.splitlines() or [text]:
+            if line:
+                self.log(f"{prefix} {line}")
+
+    def _log_assistant(self, resp: ChatResponse, *, streamed: bool = False) -> None:
+        if resp.thinking and not streamed:
             self.log("  [thinking]")
             for line in resp.thinking.splitlines() or [""]:
                 self.log(f"  ? {line}")
-        if resp.content:
+        if resp.content and not streamed:
             for line in resp.content.splitlines() or [""]:
                 self.log(f"  > {line}")
         if resp.tool_calls:

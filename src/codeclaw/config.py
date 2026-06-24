@@ -5,6 +5,7 @@ Ollama is running locally on the default port.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,4 +51,41 @@ class Settings:
 
 def load_settings() -> Settings:
     """Build a fresh Settings from the current environment."""
-    return Settings()
+    settings = Settings()
+    return _apply_project_defaults(settings)
+
+
+def _apply_project_defaults(settings: Settings) -> Settings:
+    path = Path(settings.project_dir).resolve() / ".codeclaw" / "settings.json"
+    if not path.exists():
+        return settings
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return settings
+    defaults = data.get("defaults") if isinstance(data, dict) else None
+    if not isinstance(defaults, dict):
+        return settings
+    overrides = {}
+    env_map = {
+        "ollama_host": "OLLAMA_HOST",
+        "model": "CODECLAW_MODEL",
+        "max_steps": "CODECLAW_MAX_STEPS",
+        "context_tokens": "CODECLAW_CONTEXT_TOKENS",
+        "temperature": "CODECLAW_TEMPERATURE",
+        "request_timeout_s": "CODECLAW_REQUEST_TIMEOUT",
+    }
+    for field_name, env_name in env_map.items():
+        if os.getenv(env_name) not in (None, "") or field_name not in defaults:
+            continue
+        current = getattr(settings, field_name)
+        raw = defaults[field_name]
+        try:
+            overrides[field_name] = type(current)(raw)
+        except (TypeError, ValueError):
+            continue
+    if not overrides:
+        return settings
+    from dataclasses import replace
+
+    return replace(settings, **overrides)

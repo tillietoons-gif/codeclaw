@@ -1,6 +1,8 @@
 """Tests for config loading and project memory."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from codeclaw import memory
@@ -31,6 +33,41 @@ def test_env_overrides(monkeypatch, tmp_path):
     assert s.ollama_host == "http://other:9999"
     assert s.model == "llama3.1:8b"
     assert s.max_steps == 5
+
+
+def test_project_defaults_load_from_codeclaw_settings(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    for k in (
+        "OLLAMA_HOST", "CODECLAW_MODEL", "CODECLAW_MAX_STEPS",
+        "CODECLAW_CONTEXT_TOKENS", "CODECLAW_TEMPERATURE",
+        "CODECLAW_PROJECT_DIR",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    settings_dir = tmp_path / ".codeclaw"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"defaults": {"model": "m", "ollama_host": "http://remote:11434", "max_steps": 9}}),
+        encoding="utf-8",
+    )
+
+    s = load_settings()
+
+    assert s.model == "m"
+    assert s.ollama_host == "http://remote:11434"
+    assert s.max_steps == 9
+
+
+def test_env_wins_over_project_defaults(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODECLAW_MODEL", "env-model")
+    settings_dir = tmp_path / ".codeclaw"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"defaults": {"model": "project-model"}}),
+        encoding="utf-8",
+    )
+
+    assert load_settings().model == "env-model"
 
 
 def test_memory_loader_includes_present_files(tmp_path):

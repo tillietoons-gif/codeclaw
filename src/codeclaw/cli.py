@@ -45,12 +45,18 @@ CONSOLE = Console()
 SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "Show available slash commands."),
     ("/status", "Show current model, project, approval mode, and git state."),
+    ("/init", "Create AGENTS.md and .codeclaw/settings.json defaults."),
+    ("/config", "Show project configuration defaults."),
+    ("/set KEY VALUE", "Set project defaults such as model or host."),
     ("/plan", "Toggle read-only planning mode for future prompts."),
+    ("/compact", "Compact the current saved session context."),
+    ("/todo", "Show the current session task list."),
     ("/sessions", "List saved sessions for this project."),
     ("/current", "Show the current session details."),
     ("/resume ID", "Resume a saved session."),
     ("/memory", "Show loaded AGENTS.md and MEMORY.md context."),
     ("/hooks", "Show configured project lifecycle hooks."),
+    ("/hook-example", "Write example hook templates for this project."),
     ("/checkpoint NAME", "Save a local project snapshot."),
     ("/checkpoints", "List saved local snapshots."),
     ("/restore ID", "Restore a saved local snapshot."),
@@ -63,6 +69,17 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/reset", "Clear the current prompt flow."),
     ("/quit", "Exit CodeClaw."),
 )
+
+CONFIG_KEYS = {
+    "host": "ollama_host",
+    "ollama_host": "ollama_host",
+    "model": "model",
+    "max_steps": "max_steps",
+    "context_tokens": "context_tokens",
+    "temperature": "temperature",
+    "request_timeout": "request_timeout_s",
+    "request_timeout_s": "request_timeout_s",
+}
 
 SNAPSHOT_EXCLUDE_DIRS = {
     ".git", ".codeclaw", "__pycache__", ".pytest_cache", ".ruff_cache",
@@ -114,6 +131,9 @@ async def _async_main(args: argparse.Namespace) -> int:
         reg = build_default_registry()
         print(json.dumps(reg.schemas(), indent=2))
         return 0
+
+    if args.objective == "install":
+        return _install_codeclaw_shim()
 
     client = OllamaClient(settings.ollama_host, timeout_s=settings.request_timeout_s)
     try:
@@ -365,6 +385,143 @@ def _print_status(settings, args, *, plan_mode: bool = False, session_id: str = 
     console.print(Panel(table, title="Status", border_style="cyan", padding=(1, 2)))
 
 
+def _project_settings_path(settings) -> Path:
+    return Path(settings.project_dir).resolve() / ".codeclaw" / "settings.json"
+
+
+def _read_project_settings(settings) -> dict:
+    path = _project_settings_path(settings)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_project_settings(settings, data: dict) -> Path:
+    path = _project_settings_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return path
+
+
+def _set_project_default(settings, key: str, value: str) -> tuple[bool, str, object | None]:
+    field_name = CONFIG_KEYS.get(key.strip().lower())
+    if not field_name:
+        return False, f"Unknown config key: {key}", None
+    current = getattr(settings, field_name)
+    try:
+        parsed: object = type(current)(value)
+    except (TypeError, ValueError):
+        return False, f"Invalid value for {field_name}: {value}", None
+    data = _read_project_settings(settings)
+    defaults = data.setdefault("defaults", {})
+    if not isinstance(defaults, dict):
+        data["defaults"] = defaults = {}
+    defaults[field_name] = parsed
+    _write_project_settings(settings, data)
+    return True, field_name, parsed
+
+
+def _print_config(settings, *, console: Console = CONSOLE) -> None:
+    data = _read_project_settings(settings)
+    defaults = data.get("defaults") if isinstance(data.get("defaults"), dict) else {}
+    table = Table(title=f"Project Config ({_project_settings_path(settings)})", show_header=True, header_style="bold cyan")
+    table.add_column("Key", style="bold")
+    table.add_column("Current")
+    table.add_column("Project Default")
+    for key in ("ollama_host", "model", "max_steps", "context_tokens", "temperature", "request_timeout_s"):
+        table.add_row(key, str(getattr(settings, key)), str(defaults.get(key, "")))
+    console.print(table)
+
+
+def _init_project(settings) -> list[Path]:
+    root = Path(settings.project_dir).resolve()
+    created: list[Path] = []
+    codeclaw_dir = root / ".codeclaw"
+    codeclaw_dir.mkdir(exist_ok=True)
+    settings_path = codeclaw_dir / "settings.json"
+    if not settings_path.exists():
+        settings_path.write_text(
+            json.dumps(
+                {
+                    "defaults": {
+                        "ollama_host": settings.ollama_host,
+                        "model": settings.model,
+                        "max_steps": settings.max_steps,
+                    },
+                    "hooks": {},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        created.append(settings_path)
+    agents_path = root / "AGENTS.md"
+    if not agents_path.exists():
+        agents_path.write_text(
+            "# CodeClaw Project Notes\n\n"
+            "- Describe build, test, and lint commands here.\n"
+            "- Add project conventions and safety notes here.\n",
+            encoding="utf-8",
+        )
+        created.append(agents_path)
+    return created
+
+
+def _write_hook_examples(settings) -> list[Path]:
+    root = Path(settings.project_dir).resolve()
+    hook_dir = root / ".codeclaw" / "hooks"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    log_hook = hook_dir / "log_event.py"
+    if not log_hook.exists():
+        log_hook.write_text(
+            "import json\n"
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "payload = json.load(sys.stdin)\n"
+            "log = Path('.codeclaw/hook-events.log')\n"
+            "log.parent.mkdir(exist_ok=True)\n"
+            "with log.open('a', encoding='utf-8') as fh:\n"
+            "    fh.write(json.dumps(payload, sort_keys=True) + '\\n')\n",
+            encoding="utf-8",
+        )
+    example_settings = root / ".codeclaw" / "settings.example.json"
+    example_settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [{"type": "command", "command": "python .codeclaw/hooks/log_event.py"}],
+                    "UserPromptSubmit": [{"type": "command", "command": "python .codeclaw/hooks/log_event.py"}],
+                    "PreToolUse": [{"type": "command", "command": "python .codeclaw/hooks/log_event.py"}],
+                    "PostToolUse": [{"type": "command", "command": "python .codeclaw/hooks/log_event.py"}],
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return [log_hook, example_settings]
+
+
+def _install_codeclaw_shim() -> int:
+    target_dir = Path.home() / ".local" / "bin"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / "codeclaw"
+    target.write_text(
+        "#!/usr/bin/env sh\n"
+        f"exec {sys.executable!s} -m codeclaw.cli \"$@\"\n",
+        encoding="utf-8",
+    )
+    target.chmod(0o755)
+    CONSOLE.print(Panel(f"Installed launcher at [cyan]{target}[/cyan]", title="install", border_style="green"))
+    if str(target_dir) not in os.environ.get("PATH", "").split(os.pathsep):
+        CONSOLE.print(f"[yellow]Add {target_dir} to PATH to run codeclaw from any directory.[/yellow]")
+    return 0
+
+
 def _session_dir(settings) -> Path:
     return Path(settings.project_dir).resolve() / ".codeclaw" / "sessions"
 
@@ -436,13 +593,16 @@ def _latest_session(settings) -> dict | None:
 
 def _session_context(session: dict, objective: str) -> str:
     turns = session.get("turns") or []
-    if not turns:
+    summary = str(session.get("compact_summary") or "").strip()
+    if not turns and not summary:
         return objective
     lines = [
         "RESUMED SESSION CONTEXT:",
         "Use the prior session turns below as context. Continue naturally from them, but follow the latest user objective.",
         "",
     ]
+    if summary:
+        lines.extend(["Compacted session summary:", summary[:4000], ""])
     for idx, turn in enumerate(turns[-8:], 1):
         lines.append(f"Turn {idx} objective: {turn.get('objective', '')}")
         final = str(turn.get("final_message", "")).strip()
@@ -466,6 +626,47 @@ def _print_current_session(session: dict, *, console: Console = CONSOLE) -> None
     if turns:
         table.add_row("last", str(turns[-1].get("objective", "")))
     console.print(Panel(table, title="current session", border_style="cyan", padding=(1, 2)))
+
+
+def _compact_session(settings, session: dict) -> str:
+    turns = session.get("turns") or []
+    lines = []
+    existing = str(session.get("compact_summary") or "").strip()
+    if existing:
+        lines.extend([existing, ""])
+    for idx, turn in enumerate(turns, 1):
+        final = str(turn.get("final_message", "")).strip().replace("\n", " ")
+        lines.append(
+            f"{idx}. {turn.get('objective', '')} -> {turn.get('reason', '')}; "
+            f"{final[:280]}"
+        )
+    summary = "\n".join(line for line in lines if line).strip()
+    session["compact_summary"] = summary[-6000:]
+    session["turns"] = turns[-3:]
+    _save_session(settings, session)
+    return session["compact_summary"]
+
+
+def _session_todos(session: dict) -> list[tuple[str, str]]:
+    turns = session.get("turns") or []
+    todos: list[tuple[str, str]] = []
+    for idx, turn in enumerate(turns[-12:], 1):
+        status = "done" if turn.get("completed") else "open"
+        todos.append((status, f"{idx}. {turn.get('objective', '')}"))
+    return todos
+
+
+def _print_todos(session: dict, *, console: Console = CONSOLE) -> None:
+    todos = _session_todos(session)
+    if not todos:
+        console.print(Panel("No session tasks yet.", title="todo", border_style="yellow"))
+        return
+    table = Table(title="Session Todo", show_header=True, header_style="bold cyan")
+    table.add_column("Status", style="bold")
+    table.add_column("Task", overflow="fold")
+    for status, task in todos:
+        table.add_row(status, task)
+    console.print(table)
 
 
 def _print_sessions(settings, *, console: Console = CONSOLE) -> None:
@@ -642,6 +843,16 @@ def _restore_id_from_command(line: str) -> str | None:
     return None
 
 
+def _set_args_from_command(line: str) -> tuple[str, str] | None:
+    prefix = "/set "
+    if not line.startswith(prefix):
+        return None
+    parts = line[len(prefix):].strip().split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    return parts[0], parts[1]
+
+
 async def _git_output(project_dir: str, *args: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         "git",
@@ -655,14 +866,20 @@ async def _git_output(project_dir: str, *args: str) -> tuple[int, str]:
 
 
 async def _print_diff(settings, *, console: Console = CONSOLE) -> None:
-    rc, out = await _git_output(settings.project_dir, "diff", "--stat")
-    if rc != 0:
-        console.print(Panel(out.strip() or "git diff failed", title="diff", border_style="red"))
+    stat_rc, stat = await _git_output(settings.project_dir, "diff", "--stat")
+    patch_rc, patch = await _git_output(settings.project_dir, "diff", "--", ".")
+    if stat_rc != 0 or patch_rc != 0:
+        console.print(Panel((stat or patch).strip() or "git diff failed", title="diff", border_style="red"))
         return
-    if not out.strip():
+    if not stat.strip() and not patch.strip():
         console.print(Panel("No working-tree diff.", title="diff", border_style="green"))
         return
-    console.print(Panel(out.rstrip(), title="diff --stat", border_style="yellow"))
+    console.print(Panel(stat.rstrip(), title="diff --stat", border_style="yellow"))
+    lines = patch.splitlines()
+    shown = "\n".join(lines[:220])
+    if len(lines) > 220:
+        shown += f"\n\n... truncated {len(lines) - 220} diff lines ..."
+    console.print(Panel(Text(shown, overflow="fold"), title="diff preview", border_style="cyan"))
 
 
 async def _print_changes(settings, *, console: Console = CONSOLE) -> None:
@@ -712,6 +929,7 @@ def _interactive_approval(args) -> Callable[[str, str], Awaitable[ApprovalDecisi
     auto = bool(args.auto_approve)
     non_interactive = bool(args.non_interactive)
     cache: dict[str, bool] = {}  # "tool_name:summary" -> approved once
+    always_tools: set[str] = set()
 
     async def approve(tool_name: str, summary: str) -> ApprovalDecision:
         if auto:
@@ -721,10 +939,12 @@ def _interactive_approval(args) -> Callable[[str, str], Awaitable[ApprovalDecisi
                 ApprovalDecision.REJECT,
                 reason="destructive action in non-interactive mode without --auto-approve",
             )
+        if tool_name in always_tools:
+            return ApprovalDecision(ApprovalDecision.APPROVE_ALWAYS, reason="approved always")
         key = f"{tool_name}:{summary}"
         if key in cache and cache[key]:
             return ApprovalDecision(ApprovalDecision.APPROVE, reason="cached")
-        from rich.prompt import Confirm
+        from rich.prompt import Prompt
 
         body = Table.grid(padding=(0, 1))
         body.add_column(style="bold")
@@ -740,10 +960,20 @@ def _interactive_approval(args) -> Callable[[str, str], Awaitable[ApprovalDecisi
             )
         )
         try:
-            ok = Confirm.ask("Allow this action?", default=False, console=CONSOLE)
+            choice = Prompt.ask(
+                "Allow action",
+                choices=["y", "a", "n"],
+                default="n",
+                console=CONSOLE,
+                show_choices=True,
+                show_default=True,
+            )
         except (EOFError, KeyboardInterrupt):
-            ok = False
-        if ok:
+            choice = "n"
+        if choice == "a":
+            always_tools.add(tool_name)
+            return ApprovalDecision(ApprovalDecision.APPROVE_ALWAYS)
+        if choice == "y":
             cache[key] = True
             return ApprovalDecision(ApprovalDecision.APPROVE)
         return ApprovalDecision(ApprovalDecision.REJECT, reason="user said no")
@@ -773,8 +1003,6 @@ def _plan_mode_objective(objective: str) -> str:
 
 
 def _ask_repl_line(console: Console) -> str:
-    from rich.prompt import Prompt
-
     console.print(
         Panel(
             "[dim]Type a prompt, or use [bold]/help[/bold], [bold]/plan[/bold], "
@@ -784,7 +1012,19 @@ def _ask_repl_line(console: Console) -> str:
             padding=(0, 1),
         )
     )
-    return Prompt.ask("[bold green]›[/bold green]", console=console).strip()
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.history import InMemoryHistory
+
+        session = getattr(_ask_repl_line, "_session", None)
+        if session is None:
+            session = PromptSession(history=InMemoryHistory(), multiline=True)
+            _ask_repl_line._session = session
+        return session.prompt("› ", multiline=True).strip()
+    except ImportError:
+        from rich.prompt import Prompt
+
+        return Prompt.ask("[bold green]›[/bold green]", console=console).strip()
 
 
 def _is_quit_command(line: str) -> bool:
@@ -813,9 +1053,10 @@ def _slash_filter(line: str) -> str | None:
     known = {
         "/q", "/quit", "/exit", "/reset", "/model", "/models",
         "/help", "/?", "/", "/status", "/tools", "/permissions", "/diff",
-        "/plan", "/sessions", "/current", "/memory", "/hooks", "/checkpoint", "/checkpoints", "/changes",
+        "/init", "/config", "/compact", "/todo", "/plan", "/sessions", "/current", "/memory",
+        "/hooks", "/hook-example", "/checkpoint", "/checkpoints", "/changes",
     }
-    if line.startswith("/restore ") or line.startswith("/checkpoint ") or line.startswith("/resume "):
+    if line.startswith(("/restore ", "/checkpoint ", "/resume ", "/set ")):
         return None
     return None if line in known else line
 
@@ -925,6 +1166,30 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
             state = "on" if plan_mode else "off"
             console.print(Panel(f"Plan mode is now [bold]{state}[/bold].", title="plan", border_style="yellow"))
             continue
+        if line == "/init":
+            created = _init_project(settings)
+            body = "\n".join(str(path) for path in created) if created else "Project already has CodeClaw files."
+            console.print(Panel(body, title="init", border_style="green"))
+            continue
+        if line == "/config":
+            _print_config(settings, console=console)
+            continue
+        set_args = _set_args_from_command(line)
+        if set_args:
+            ok, key, value = _set_project_default(settings, set_args[0], set_args[1])
+            if ok:
+                settings = replace(settings, **{key: value})
+                console.print(Panel(f"{key} = {value}", title="config saved", border_style="green"))
+            else:
+                console.print(Panel(key, title="config failed", border_style="red"))
+            continue
+        if line == "/compact":
+            summary = _compact_session(settings, session)
+            console.print(Panel(summary or "Nothing to compact yet.", title="compact", border_style="green"))
+            continue
+        if line == "/todo":
+            _print_todos(session, console=console)
+            continue
         if line == "/status":
             _print_status(settings, args, plan_mode=plan_mode, session_id=session["id"], console=console)
             continue
@@ -949,6 +1214,10 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
             continue
         if line == "/hooks":
             _print_hooks(settings, console=console)
+            continue
+        if line == "/hook-example":
+            files = _write_hook_examples(settings)
+            console.print(Panel("\n".join(str(path) for path in files), title="hook examples", border_style="green"))
             continue
         if line == "/checkpoints":
             _print_checkpoints(settings, console=console)

@@ -102,6 +102,37 @@ async def test_chat_parses_text_response():
 
 
 @pytest.mark.asyncio
+async def test_chat_streams_deltas_and_assembles_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stream"] is True
+        chunks = [
+            json.dumps({"model": "m", "message": {"thinking": "hmm "}}),
+            json.dumps({"model": "m", "message": {"content": "he"}}),
+            json.dumps({"model": "m", "message": {"content": "llo"}, "prompt_eval_count": 2, "eval_count": 3}),
+        ]
+        return httpx.Response(200, content=("\n".join(chunks) + "\n").encode())
+
+    deltas = []
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        client = OllamaClient.__new__(OllamaClient)
+        client.host = "http://x"
+        client._timeout = httpx.Timeout(5)
+        client._client = http
+        resp = await client.chat(
+            model="m",
+            messages=[ChatMessage("user", "hello")],
+            on_delta=lambda kind, text: deltas.append((kind, text)),
+        )
+
+    assert deltas == [("thinking", "hmm "), ("content", "he"), ("content", "llo")]
+    assert resp.thinking == "hmm "
+    assert resp.content == "hello"
+    assert resp.prompt_tokens == 2
+    assert resp.completion_tokens == 3
+
+
+@pytest.mark.asyncio
 async def test_chat_parses_tool_calls():
     def handler(request):
         return _ok(200, {
