@@ -140,7 +140,11 @@ def test_slash_command_helpers():
     assert cli._model_name_from_command("/model qwen3:14b") == "qwen3:14b"
     assert cli._slash_filter("/sta") == "/sta"
     assert cli._slash_filter("/status") is None
+    assert cli._slash_filter("/checkpoint before-change") is None
+    assert cli._slash_filter("/restore abc") is None
     assert cli._slash_filter("normal prompt") is None
+    assert cli._checkpoint_name_from_command("/checkpoint before change") == "before change"
+    assert cli._restore_id_from_command("/restore abc123") == "abc123"
 
 
 def test_command_palette_renders(capsys):
@@ -228,3 +232,33 @@ def test_plan_mode_objective_is_read_only():
     assert "PLAN MODE" in out
     assert "Do not edit files" in out
     assert "change the app" in out
+
+
+def test_checkpoint_helpers_roundtrip(tmp_path):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    (tmp_path / "a.txt").write_text("one")
+    (tmp_path / ".env").write_text("secret")
+
+    checkpoint = cli._create_checkpoint(settings, "before")
+    (tmp_path / "a.txt").write_text("two")
+    (tmp_path / "new.txt").write_text("new")
+
+    ok, restored = cli._restore_checkpoint(settings, checkpoint["id"])
+
+    assert ok
+    assert restored == checkpoint["id"]
+    assert (tmp_path / "a.txt").read_text() == "one"
+    assert not (tmp_path / "new.txt").exists()
+    assert (tmp_path / ".env").read_text() == "secret"
+
+
+def test_checkpoints_render(tmp_path, capsys):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    (tmp_path / "a.txt").write_text("one")
+    cli._create_checkpoint(settings, "before")
+
+    cli._print_checkpoints(settings)
+
+    out = capsys.readouterr().out
+    assert "Checkpoints" in out
+    assert "before" in out

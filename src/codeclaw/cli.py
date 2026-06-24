@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -46,6 +47,10 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/plan", "Toggle read-only planning mode for future prompts."),
     ("/sessions", "List saved sessions for this project."),
     ("/memory", "Show loaded AGENTS.md and MEMORY.md context."),
+    ("/checkpoint NAME", "Save a local project snapshot."),
+    ("/checkpoints", "List saved local snapshots."),
+    ("/restore ID", "Restore a saved local snapshot."),
+    ("/changes", "Show git status and diff summary."),
     ("/tools", "List available CodeClaw tools."),
     ("/permissions", "Show which tools require approval in this session."),
     ("/diff", "Show the current git diff summary."),
@@ -54,6 +59,12 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/reset", "Clear the current prompt flow."),
     ("/quit", "Exit CodeClaw."),
 )
+
+SNAPSHOT_EXCLUDE_DIRS = {
+    ".git", ".codeclaw", "__pycache__", ".pytest_cache", ".ruff_cache",
+    ".mypy_cache", ".venv", "venv", "node_modules", "build", "dist",
+}
+SNAPSHOT_EXCLUDE_FILES = {".env", ".DS_Store"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -437,6 +448,127 @@ def _print_memory(settings, *, console: Console = CONSOLE) -> None:
     console.print(Panel(Markdown(context), title="memory", border_style="cyan", padding=(1, 2)))
 
 
+def _checkpoint_dir(settings) -> Path:
+    return Path(settings.project_dir).resolve() / ".codeclaw" / "checkpoints"
+
+
+def _checkpoint_id(name: str = "") -> str:
+    stamp = datetime.now(UTC).replace(microsecond=0).strftime("%Y%m%dT%H%M%SZ")
+    slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in name.strip().lower()).strip("-")
+    return f"{stamp}-{slug}" if slug else stamp
+
+
+def _iter_snapshot_files(root: Path):
+    for current, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SNAPSHOT_EXCLUDE_DIRS]
+        current_path = Path(current)
+        for name in files:
+            if name in SNAPSHOT_EXCLUDE_FILES:
+                continue
+            path = current_path / name
+            if path.is_file():
+                yield path
+
+
+def _create_checkpoint(settings, name: str = "") -> dict:
+    root = Path(settings.project_dir).resolve()
+    checkpoint_id = _checkpoint_id(name)
+    directory = _checkpoint_dir(settings) / checkpoint_id
+    files_dir = directory / "files"
+    files: list[str] = []
+    files_dir.mkdir(parents=True, exist_ok=True)
+    for path in _iter_snapshot_files(root):
+        rel = path.relative_to(root)
+        dest = files_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+        files.append(rel.as_posix())
+    metadata = {
+        "id": checkpoint_id,
+        "name": name,
+        "created_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "project_dir": str(root),
+        "files": sorted(files),
+    }
+    (directory / "checkpoint.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return metadata
+
+
+def _load_checkpoints(settings) -> list[dict]:
+    directory = _checkpoint_dir(settings)
+    checkpoints: list[dict] = []
+    if not directory.exists():
+        return checkpoints
+    for path in sorted(directory.glob("*/checkpoint.json"), reverse=True):
+        try:
+            checkpoints.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return checkpoints
+
+
+def _find_checkpoint(settings, checkpoint_id: str) -> dict | None:
+    for checkpoint in _load_checkpoints(settings):
+        cid = str(checkpoint.get("id", ""))
+        if cid == checkpoint_id or cid.startswith(checkpoint_id):
+            return checkpoint
+    return None
+
+
+def _restore_checkpoint(settings, checkpoint_id: str) -> tuple[bool, str]:
+    checkpoint = _find_checkpoint(settings, checkpoint_id)
+    if not checkpoint:
+        return False, f"Checkpoint not found: {checkpoint_id}"
+    root = Path(settings.project_dir).resolve()
+    directory = _checkpoint_dir(settings) / checkpoint["id"]
+    files_dir = directory / "files"
+    manifest = set(checkpoint.get("files") or [])
+
+    for path in list(_iter_snapshot_files(root)):
+        rel = path.relative_to(root).as_posix()
+        if rel not in manifest:
+            path.unlink()
+
+    for rel in manifest:
+        src = files_dir / rel
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+    return True, str(checkpoint["id"])
+
+
+def _print_checkpoints(settings, *, console: Console = CONSOLE) -> None:
+    checkpoints = _load_checkpoints(settings)
+    if not checkpoints:
+        console.print(Panel("No checkpoints yet.", title="checkpoints", border_style="yellow"))
+        return
+    table = Table(title="Checkpoints", show_header=True, header_style="bold cyan")
+    table.add_column("ID", style="bold")
+    table.add_column("Created")
+    table.add_column("Name", overflow="fold")
+    table.add_column("Files", justify="right")
+    for checkpoint in checkpoints[:20]:
+        table.add_row(
+            str(checkpoint.get("id", "?")),
+            str(checkpoint.get("created_at", "?")),
+            str(checkpoint.get("name", "")),
+            str(len(checkpoint.get("files") or [])),
+        )
+    console.print(table)
+
+
+def _checkpoint_name_from_command(line: str) -> str:
+    prefix = "/checkpoint"
+    return line[len(prefix):].strip() if line.startswith(prefix) else ""
+
+
+def _restore_id_from_command(line: str) -> str | None:
+    prefix = "/restore "
+    if line.startswith(prefix):
+        return line[len(prefix):].strip()
+    return None
+
+
 async def _git_output(project_dir: str, *args: str) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         "git",
@@ -458,6 +590,19 @@ async def _print_diff(settings, *, console: Console = CONSOLE) -> None:
         console.print(Panel("No working-tree diff.", title="diff", border_style="green"))
         return
     console.print(Panel(out.rstrip(), title="diff --stat", border_style="yellow"))
+
+
+async def _print_changes(settings, *, console: Console = CONSOLE) -> None:
+    status_rc, status = await _git_output(settings.project_dir, "status", "--short", "--branch")
+    diff_rc, diff = await _git_output(settings.project_dir, "diff", "--stat")
+    body = []
+    if status_rc == 0:
+        body.append(status.strip() or "(clean)")
+    else:
+        body.append(status.strip() or "git status failed")
+    if diff_rc == 0 and diff.strip():
+        body.append("\n" + diff.rstrip())
+    console.print(Panel("\n".join(body), title="changes", border_style="cyan"))
 
 
 def _log_stream(console: Console = CONSOLE) -> Callable[[str], None]:
@@ -593,8 +738,10 @@ def _slash_filter(line: str) -> str | None:
     known = {
         "/q", "/quit", "/exit", "/reset", "/model", "/models",
         "/help", "/?", "/", "/status", "/tools", "/permissions", "/diff",
-        "/plan", "/sessions", "/memory",
+        "/plan", "/sessions", "/memory", "/checkpoint", "/checkpoints", "/changes",
     }
+    if line.startswith("/restore ") or line.startswith("/checkpoint "):
+        return None
     return None if line in known else line
 
 
@@ -672,6 +819,29 @@ async def _run_repl(settings, client, args) -> int:
             continue
         if line == "/memory":
             _print_memory(settings, console=console)
+            continue
+        if line == "/checkpoints":
+            _print_checkpoints(settings, console=console)
+            continue
+        if line == "/changes":
+            await _print_changes(settings, console=console)
+            continue
+        if line == "/checkpoint" or line.startswith("/checkpoint "):
+            checkpoint = _create_checkpoint(settings, _checkpoint_name_from_command(line))
+            console.print(
+                Panel(
+                    f"Saved [bold]{len(checkpoint['files'])}[/bold] files.",
+                    title=f"checkpoint {checkpoint['id']}",
+                    border_style="green",
+                )
+            )
+            continue
+        restore_id = _restore_id_from_command(line)
+        if restore_id:
+            ok, message = _restore_checkpoint(settings, restore_id)
+            border = "green" if ok else "red"
+            title = "restore" if ok else "restore failed"
+            console.print(Panel(message, title=title, border_style=border))
             continue
         if line == "/tools":
             _print_tools_table(console=console)

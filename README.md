@@ -72,6 +72,10 @@ Inside the interactive console, commands start with `/`:
 /tools           list available tools
 /permissions     show approval rules for tools
 /diff            show current git diff summary
+/changes         show git status and diff summary
+/checkpoint NAME save a local project snapshot
+/checkpoints     list saved local snapshots
+/restore ID      restore a saved local snapshot
 /models          choose from installed Ollama models
 /model qwen3:14b switch directly to a model
 /reset           start a fresh saved session
