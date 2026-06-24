@@ -4,6 +4,8 @@ These tests use a fake OllamaClient to keep them deterministic and offline.
 """
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import replace
 
 import pytest
@@ -172,6 +174,34 @@ async def test_rejected_action_returns_error_to_model(tmp_path):
     # The tool result should be an error message in the final conversation.
     last = client.calls[-1]
     assert any("REJECTED" in m.content for m in last if m.role == "tool")
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_hook_can_block_tool_use(tmp_path):
+    settings_dir = tmp_path / ".codeclaw"
+    settings_dir.mkdir()
+    command = f"{sys.executable} -c \"import sys; print('blocked by policy'); sys.exit(4)\""
+    (settings_dir / "settings.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"type": "command", "command": command}]}}),
+        encoding="utf-8",
+    )
+    settings = replace(Settings(), project_dir=str(tmp_path), max_steps=5)
+    client = FakeClient([
+        _tool_response("write_file", {"path": "f.txt", "content": "new"}),
+        _text_response("I did not write the file."),
+    ])
+
+    async def approval(name, summary):
+        raise AssertionError("approval should not run when PreToolUse blocks first")
+
+    agent = CodeClawAgent(settings=settings, client=client, approval=approval, log=lambda m: None)
+    result = await agent.run("write f.txt")
+
+    assert result.completed
+    assert not (tmp_path / "f.txt").exists()
+    last = client.calls[-1]
+    assert any("PreToolUse hook blocked" in m.content for m in last if m.role == "tool")
+    assert any("blocked by policy" in m.content for m in last if m.role == "tool")
 
 
 @pytest.mark.asyncio

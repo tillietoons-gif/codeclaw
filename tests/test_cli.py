@@ -56,8 +56,9 @@ class FakeSelectClient:
 async def test_repl_argument_starts_repl(monkeypatch):
     called = {}
 
-    async def fake_repl(settings, client, args):
+    async def fake_repl(settings, client, args, *, resume_latest=False):
         called["objective"] = args.objective
+        called["resume_latest"] = resume_latest
         return 0
 
     monkeypatch.setattr("rich.prompt.IntPrompt.ask", lambda *args, **kwargs: 1)
@@ -66,7 +67,7 @@ async def test_repl_argument_starts_repl(monkeypatch):
 
     args = cli._build_parser().parse_args(["repl"])
     assert await cli._async_main(args) == 0
-    assert called == {"objective": "repl"}
+    assert called == {"objective": "repl", "resume_latest": False}
 
 
 @pytest.mark.asyncio
@@ -127,6 +128,24 @@ async def test_check_alias_runs_health_check(monkeypatch):
     assert await cli._async_main(args) == 3
 
 
+@pytest.mark.asyncio
+async def test_continue_alias_resumes_latest(monkeypatch):
+    called = {}
+
+    async def fake_repl(settings, client, args, *, resume_latest=False):
+        called["resume_latest"] = resume_latest
+        return 0
+
+    monkeypatch.setattr("rich.prompt.IntPrompt.ask", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(cli, "OllamaClient", FakeSelectClient)
+    monkeypatch.setattr(cli, "_run_repl", fake_repl)
+
+    args = cli._build_parser().parse_args(["continue"])
+
+    assert await cli._async_main(args) == 0
+    assert called == {"resume_latest": True}
+
+
 def test_slash_command_helpers():
     assert cli._is_quit_command("/quit")
     assert cli._is_quit_command("/q")
@@ -140,11 +159,13 @@ def test_slash_command_helpers():
     assert cli._model_name_from_command("/model qwen3:14b") == "qwen3:14b"
     assert cli._slash_filter("/sta") == "/sta"
     assert cli._slash_filter("/status") is None
+    assert cli._slash_filter("/hooks") is None
     assert cli._slash_filter("/checkpoint before-change") is None
     assert cli._slash_filter("/restore abc") is None
     assert cli._slash_filter("normal prompt") is None
     assert cli._checkpoint_name_from_command("/checkpoint before change") == "before change"
     assert cli._restore_id_from_command("/restore abc123") == "abc123"
+    assert cli._resume_id_from_command("/resume abc123") == "abc123"
 
 
 def test_command_palette_renders(capsys):
@@ -155,6 +176,7 @@ def test_command_palette_renders(capsys):
     assert "/permissions" in out
     assert "/plan" in out
     assert "/sessions" in out
+    assert "/hooks" in out
 
 
 def test_tools_and_permissions_render(capsys):
@@ -198,6 +220,8 @@ def test_session_helpers_roundtrip(tmp_path):
     assert len(sessions) == 1
     assert sessions[0]["turns"][0]["objective"] == "do thing"
     assert sessions[0]["turns"][0]["plan_mode"] is True
+    assert cli._find_session(settings, sessions[0]["id"][:8])["id"] == sessions[0]["id"]
+    assert cli._latest_session(settings)["id"] == sessions[0]["id"]
 
 
 def test_sessions_and_memory_render(tmp_path, capsys):
@@ -208,12 +232,45 @@ def test_sessions_and_memory_render(tmp_path, capsys):
     (tmp_path / "MEMORY.md").write_text("remember this")
 
     cli._print_sessions(settings)
+    cli._print_current_session(session)
     cli._print_memory(settings)
 
     out = capsys.readouterr().out
     assert "Sessions" in out
+    assert "current session" in out
     assert "do thing" in out
     assert "remember this" in out
+
+
+def test_hooks_render(tmp_path, capsys):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    settings_dir = tmp_path / ".codeclaw"
+    settings_dir.mkdir()
+    (settings_dir / "settings.json").write_text(
+        '{"hooks": {"SessionStart": ["echo hi"], "PreToolUse": ["echo check"]}}',
+        encoding="utf-8",
+    )
+
+    cli._print_hooks(settings)
+
+    out = capsys.readouterr().out
+    assert "Hooks" in out
+    assert "SessionStart" in out
+    assert "PreToolUse" in out
+
+
+def test_session_context_includes_prior_turns(tmp_path):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    session = cli._new_session(settings)
+    result = SimpleNamespace(final_message="finished previous work", completed=True, reason="done", steps=[], total_tokens=0)
+    cli._append_session_turn(settings, session, "previous objective", result, plan_mode=False)
+
+    context = cli._session_context(session, "next objective")
+
+    assert "RESUMED SESSION CONTEXT" in context
+    assert "previous objective" in context
+    assert "finished previous work" in context
+    assert "next objective" in context
 
 
 @pytest.mark.asyncio

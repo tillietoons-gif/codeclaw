@@ -68,7 +68,10 @@ Inside the interactive console, commands start with `/`:
 /status          show current model, project, approval mode, and session
 /plan            toggle read-only planning mode
 /sessions        list saved sessions in .codeclaw/sessions
+/current         show current session details
+/resume ID       resume a saved session
 /memory          show loaded AGENTS.md and MEMORY.md context
+/hooks           show configured project lifecycle hooks
 /tools           list available tools
 /permissions     show approval rules for tools
 /diff            show current git diff summary
@@ -81,6 +84,31 @@ Inside the interactive console, commands start with `/`:
 /reset           start a fresh saved session
 /quit            exit
 ```
+
+Resume the latest saved session from the current project:
+
+```bash
+codeclaw continue
+```
+
+Project hooks can be configured in `.codeclaw/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "type": "command", "command": "python scripts/check_tool.py" }
+    ],
+    "UserPromptSubmit": [
+      { "type": "command", "command": "python scripts/check_prompt.py" }
+    ]
+  }
+}
+```
+
+Hook commands run from the project directory and receive JSON on stdin. A
+non-zero `PreToolUse` exit blocks the tool call; a non-zero
+`UserPromptSubmit` exit blocks the prompt.
 
 ## Tools
 

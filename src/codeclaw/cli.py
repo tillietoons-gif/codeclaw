@@ -32,6 +32,7 @@ from rich.text import Text
 from . import __version__
 from .agent import DESTRUCTIVE_TOOLS, CodeClawAgent
 from .config import load_settings
+from .hooks import HOOK_EVENTS, HookResult, hook_counts, hook_settings_path, run_hooks
 from .memory import load_project_context
 from .ollama import OllamaClient, OllamaError
 from .tools import build_default_registry
@@ -46,7 +47,10 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/status", "Show current model, project, approval mode, and git state."),
     ("/plan", "Toggle read-only planning mode for future prompts."),
     ("/sessions", "List saved sessions for this project."),
+    ("/current", "Show the current session details."),
+    ("/resume ID", "Resume a saved session."),
     ("/memory", "Show loaded AGENTS.md and MEMORY.md context."),
+    ("/hooks", "Show configured project lifecycle hooks."),
     ("/checkpoint NAME", "Save a local project snapshot."),
     ("/checkpoints", "List saved local snapshots."),
     ("/restore ID", "Restore a saved local snapshot."),
@@ -113,7 +117,7 @@ async def _async_main(args: argparse.Namespace) -> int:
 
     client = OllamaClient(settings.ollama_host, timeout_s=settings.request_timeout_s)
     try:
-        opens_interactive_ui = args.objective in ("repl", "models") or (not args.objective and sys.stdin.isatty())
+        opens_interactive_ui = args.objective in ("repl", "models", "continue") or (not args.objective and sys.stdin.isatty())
         should_select_model = args.select_model or (opens_interactive_ui and not args.model)
         if should_select_model:
             if args.non_interactive:
@@ -127,8 +131,9 @@ async def _async_main(args: argparse.Namespace) -> int:
         if args.check or args.objective == "check":
             return await _do_check(client, settings)
 
-        if args.objective in ("repl", "models"):
-            return await _run_repl(settings, client, args)
+        if args.objective in ("repl", "models", "continue"):
+            resume_latest = args.objective == "continue"
+            return await _run_repl(settings, client, args, resume_latest=resume_latest)
         if not args.objective and sys.stdin.isatty():
             return await _run_repl(settings, client, args)
         elif not args.objective:
@@ -416,6 +421,53 @@ def _load_sessions(settings) -> list[dict]:
     return sessions
 
 
+def _find_session(settings, session_id: str) -> dict | None:
+    for session in _load_sessions(settings):
+        sid = str(session.get("id", ""))
+        if sid == session_id or sid.startswith(session_id):
+            return session
+    return None
+
+
+def _latest_session(settings) -> dict | None:
+    sessions = _load_sessions(settings)
+    return sessions[0] if sessions else None
+
+
+def _session_context(session: dict, objective: str) -> str:
+    turns = session.get("turns") or []
+    if not turns:
+        return objective
+    lines = [
+        "RESUMED SESSION CONTEXT:",
+        "Use the prior session turns below as context. Continue naturally from them, but follow the latest user objective.",
+        "",
+    ]
+    for idx, turn in enumerate(turns[-8:], 1):
+        lines.append(f"Turn {idx} objective: {turn.get('objective', '')}")
+        final = str(turn.get("final_message", "")).strip()
+        if final:
+            lines.append(f"Turn {idx} result: {final[:2000]}")
+        lines.append("")
+    lines.append(f"Latest objective: {objective}")
+    return "\n".join(lines)
+
+
+def _print_current_session(session: dict, *, console: Console = CONSOLE) -> None:
+    turns = session.get("turns") or []
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("id", str(session.get("id", "?")))
+    table.add_row("model", str(session.get("model", "?")))
+    table.add_row("created", str(session.get("created_at", "?")))
+    table.add_row("updated", str(session.get("updated_at", "?")))
+    table.add_row("turns", str(len(turns)))
+    if turns:
+        table.add_row("last", str(turns[-1].get("objective", "")))
+    console.print(Panel(table, title="current session", border_style="cyan", padding=(1, 2)))
+
+
 def _print_sessions(settings, *, console: Console = CONSOLE) -> None:
     sessions = _load_sessions(settings)
     if not sessions:
@@ -446,6 +498,27 @@ def _print_memory(settings, *, console: Console = CONSOLE) -> None:
         console.print(Panel("No AGENTS.md or MEMORY.md found for this project.", title="memory", border_style="yellow"))
         return
     console.print(Panel(Markdown(context), title="memory", border_style="cyan", padding=(1, 2)))
+
+
+def _print_hooks(settings, *, console: Console = CONSOLE) -> None:
+    counts = hook_counts(settings.project_dir)
+    path = hook_settings_path(settings.project_dir)
+    if not counts:
+        console.print(
+            Panel(
+                f"No hooks configured.\n[dim]Create {path} with a hooks object to add them.[/dim]",
+                title="hooks",
+                border_style="yellow",
+            )
+        )
+        return
+    table = Table(title=f"Hooks ({path})", show_header=True, header_style="bold cyan")
+    table.add_column("Event", style="bold")
+    table.add_column("Commands", justify="right")
+    for event in HOOK_EVENTS:
+        if event in counts:
+            table.add_row(event, str(counts[event]))
+    console.print(table)
 
 
 def _checkpoint_dir(settings) -> Path:
@@ -614,11 +687,13 @@ def _log_stream(console: Console = CONSOLE) -> Callable[[str], None]:
             console.print(f"[bold green]{msg}[/bold green]")
         elif msg.startswith("[step"):
             console.rule(f"[bold cyan]{msg.strip()}[/bold cyan]", style="dim")
+        elif msg.startswith("[hook]"):
+            console.print(f"[dim]{msg}[/dim]")
         elif msg.startswith("  [tool_calls"):
             console.print(f"[bold magenta]{msg.strip()}[/bold magenta]")
         elif msg.startswith("  [thinking"):
             console.print(f"[bold yellow]{msg.strip()}[/bold yellow]")
-        elif msg.startswith("  [tokens"):
+        elif msg.startswith(("  [tokens", "  [hook]")):
             console.print(f"[dim]{msg.strip()}[/dim]")
         elif msg.startswith("  ?"):
             console.print(Text(msg[3:], style="dim yellow"))
@@ -738,15 +813,22 @@ def _slash_filter(line: str) -> str | None:
     known = {
         "/q", "/quit", "/exit", "/reset", "/model", "/models",
         "/help", "/?", "/", "/status", "/tools", "/permissions", "/diff",
-        "/plan", "/sessions", "/memory", "/checkpoint", "/checkpoints", "/changes",
+        "/plan", "/sessions", "/current", "/memory", "/hooks", "/checkpoint", "/checkpoints", "/changes",
     }
-    if line.startswith("/restore ") or line.startswith("/checkpoint "):
+    if line.startswith("/restore ") or line.startswith("/checkpoint ") or line.startswith("/resume "):
         return None
     return None if line in known else line
 
 
 def _model_name_from_command(line: str) -> str | None:
     prefix = "/model "
+    if line.startswith(prefix):
+        return line[len(prefix):].strip()
+    return None
+
+
+def _resume_id_from_command(line: str) -> str | None:
+    prefix = "/resume "
     if line.startswith(prefix):
         return line[len(prefix):].strip()
     return None
@@ -772,18 +854,49 @@ async def _run_one_shot(settings, client, args, objective: str) -> int:
     return 0 if result.completed else 2
 
 
-async def _run_repl(settings, client, args) -> int:
+async def _run_cli_hooks(settings, event: str, payload: dict, *, console: Console = CONSOLE) -> list[HookResult]:
+    results = await run_hooks(settings.project_dir, event, payload)
+    for result in results:
+        status = "ok" if result.ok else f"exit {result.returncode}"
+        console.print(f"[dim][hook] {event}: {status}[/dim]")
+        if result.output:
+            console.print(Panel(Text(result.output, overflow="fold"), title=f"hook {event}", border_style="yellow"))
+    return results
+
+
+def _first_failed_hook(results: list[HookResult]) -> HookResult | None:
+    return next((result for result in results if not result.ok), None)
+
+
+async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> int:
     console = CONSOLE
     _print_repl_header(settings, console=console)
     approval = _interactive_approval(args)
     plan_mode = False
-    session = _new_session(settings)
-    _save_session(settings, session)
+    session = _latest_session(settings) if resume_latest else None
+    if session:
+        settings = replace(settings, model=session.get("model") or settings.model)
+        console.print(f"[dim]resumed session:[/dim] [cyan]{session['id']}[/cyan]")
+    else:
+        session = _new_session(settings)
+        _save_session(settings, session)
+    await _run_cli_hooks(
+        settings,
+        "SessionStart",
+        {
+            "session_id": session["id"],
+            "model": settings.model,
+            "project_dir": str(Path(settings.project_dir).resolve()),
+            "resumed": bool(resume_latest),
+        },
+        console=console,
+    )
     while True:
         try:
             line = _ask_repl_line(console)
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]bye.[/dim]")
+            await _run_cli_hooks(settings, "SessionEnd", {"session_id": session["id"], "reason": "interrupted"}, console=console)
             return 0
         if not line:
             continue
@@ -795,6 +908,7 @@ async def _run_repl(settings, client, args) -> int:
             _print_command_palette(filter_text, console=console)
             continue
         if _is_quit_command(line):
+            await _run_cli_hooks(settings, "SessionEnd", {"session_id": session["id"], "reason": "quit"}, console=console)
             return 0
         if _is_reset_command(line):
             session = _new_session(settings)
@@ -817,8 +931,24 @@ async def _run_repl(settings, client, args) -> int:
         if line == "/sessions":
             _print_sessions(settings, console=console)
             continue
+        if line == "/current":
+            _print_current_session(session, console=console)
+            continue
+        resume_id = _resume_id_from_command(line)
+        if resume_id:
+            found = _find_session(settings, resume_id)
+            if found:
+                session = found
+                settings = replace(settings, model=session.get("model") or settings.model)
+                console.print(f"[dim]resumed session:[/dim] [cyan]{session['id']}[/cyan]")
+            else:
+                console.print(Panel(f"Session not found: {resume_id}", title="resume failed", border_style="red"))
+            continue
         if line == "/memory":
             _print_memory(settings, console=console)
+            continue
+        if line == "/hooks":
+            _print_hooks(settings, console=console)
             continue
         if line == "/checkpoints":
             _print_checkpoints(settings, console=console)
@@ -867,8 +997,29 @@ async def _run_repl(settings, client, args) -> int:
         title = "plan objective" if plan_mode else "objective"
         border = "yellow" if plan_mode else "green"
         console.print(Panel(Text(line, overflow="fold"), title=title, border_style=border))
+        prompt_hooks = await _run_cli_hooks(
+            settings,
+            "UserPromptSubmit",
+            {
+                "session_id": session["id"],
+                "prompt": line,
+                "plan_mode": plan_mode,
+                "model": settings.model,
+            },
+            console=console,
+        )
+        failed_hook = _first_failed_hook(prompt_hooks)
+        if failed_hook:
+            console.print(
+                Panel(
+                    f"Prompt blocked by UserPromptSubmit hook with exit code {failed_hook.returncode}.",
+                    title="prompt blocked",
+                    border_style="red",
+                )
+            )
+            continue
         approval_for_run = _plan_mode_approval(approval) if plan_mode else approval
-        objective = _plan_mode_objective(line) if plan_mode else line
+        objective = _plan_mode_objective(line) if plan_mode else _session_context(session, line)
         agent = CodeClawAgent(
             settings=settings,
             client=client,

@@ -33,6 +33,7 @@ from pathlib import Path
 
 from . import memory
 from .config import Settings
+from .hooks import HookResult, run_hooks
 from .ollama import ChatMessage, ChatResponse, OllamaClient, ToolCall
 from .tools import ToolContext, ToolRegistry, build_default_registry
 from .tools.base import ApprovalDecision, ToolResult
@@ -103,6 +104,10 @@ class CodeClawAgent:
             log=self.log,
             session_id=self.session_id,
         )
+        await self._run_hooks(
+            "RunStart",
+            {"session_id": self.session_id, "objective": objective, "cwd": ctx.cwd},
+        )
 
         for step_idx in range(1, self.settings.max_steps + 1):
             self.log(f"\n[step {step_idx}/{self.settings.max_steps}]")
@@ -117,7 +122,9 @@ class CodeClawAgent:
                 )
             except Exception as exc:
                 self.log(f"[error] Ollama call failed: {exc}")
-                return RunResult(objective, "", steps, total_tokens, False, f"error: {exc}")
+                result = RunResult(objective, "", steps, total_tokens, False, f"error: {exc}")
+                await self._run_complete_hook(result)
+                return result
 
             total_tokens += resp.prompt_tokens + resp.completion_tokens
             self._log_assistant(resp)
@@ -134,7 +141,7 @@ class CodeClawAgent:
                 # Model decided it is done. Treat the assistant text as the
                 # final report. We trust the model to be self-aware here —
                 # but also break out of the loop regardless of what it says.
-                return RunResult(
+                result = RunResult(
                     objective=objective,
                     final_message=resp.content or "(no content)",
                     steps=steps + [record],
@@ -142,6 +149,8 @@ class CodeClawAgent:
                     completed=True,
                     reason="done",
                 )
+                await self._run_complete_hook(result)
+                return result
 
             # Execute each tool call sequentially. In principle we could
             # parallelize, but most tool calls have ordering dependencies
@@ -160,7 +169,7 @@ class CodeClawAgent:
             steps.append(record)
 
         self.log(f"[done] hit max_steps={self.settings.max_steps}")
-        return RunResult(
+        result = RunResult(
             objective=objective,
             final_message="Reached the configured max_steps without a final answer.",
             steps=steps,
@@ -168,12 +177,29 @@ class CodeClawAgent:
             completed=False,
             reason="max_steps",
         )
+        await self._run_complete_hook(result)
+        return result
 
     async def _run_one_tool(self, tc: ToolCall, ctx: ToolContext) -> ToolResult:
         from .tools import parse_args
 
         args = parse_args(tc.arguments)
         tool_name = tc.name
+        hook_payload = {
+            "session_id": self.session_id,
+            "tool": tool_name,
+            "arguments": args,
+            "cwd": ctx.cwd,
+        }
+        pre_results = await self._run_hooks("PreToolUse", hook_payload)
+        blocking_result = next((result for result in pre_results if not result.ok), None)
+        if blocking_result:
+            self.log(f"[denied] {tool_name}: blocked by PreToolUse hook")
+            return ToolResult(
+                _hook_block_message(blocking_result),
+                is_error=True,
+                metadata={"blocked_by_hook": True},
+            )
         if tool_name in DESTRUCTIVE_TOOLS:
             summary = _summarize_call(tool_name, args)
             decision = await ctx.approval(tool_name, summary)
@@ -184,7 +210,40 @@ class CodeClawAgent:
                     is_error=True,
                 )
             self.log(f"[approved] {tool_name}: {summary}")
-        return await self.registry.invoke(tool_name, args, ctx)
+        result = await self.registry.invoke(tool_name, args, ctx)
+        await self._run_hooks(
+            "PostToolUse",
+            {
+                **hook_payload,
+                "is_error": result.is_error,
+                "result": result.as_tool_message(),
+            },
+        )
+        return result
+
+    async def _run_complete_hook(self, result: RunResult) -> None:
+        await self._run_hooks(
+            "RunComplete",
+            {
+                "session_id": self.session_id,
+                "objective": result.objective,
+                "completed": result.completed,
+                "reason": result.reason,
+                "steps": len(result.steps),
+                "tokens": result.total_tokens,
+                "final_message": result.final_message,
+            },
+        )
+
+    async def _run_hooks(self, event: str, payload: dict) -> list[HookResult]:
+        results = await run_hooks(self.settings.project_dir, event, payload)
+        for result in results:
+            status = "ok" if result.ok else f"exit {result.returncode}"
+            self.log(f"[hook] {event}: {status}")
+            if result.output:
+                for line in result.output.splitlines()[:8]:
+                    self.log(f"  [hook] {line}")
+        return results
 
     async def _approval_wrapper(self, tool_name: str, summary: str) -> ApprovalDecision:
         # ApprovalDecision is a synchronous decision in our registry, so we
@@ -265,6 +324,13 @@ def _summarize_call(tool_name: str, args: dict) -> str:
     if tool_name == "git_commit":
         return f"git commit: {args.get('message','')}"
     return f"{tool_name}({json.dumps(args)[:200]})"
+
+
+def _hook_block_message(result: HookResult) -> str:
+    detail = f"PreToolUse hook blocked this tool call with exit code {result.returncode}."
+    if result.output:
+        detail += f"\nHook output:\n{result.output}"
+    return detail
 
 
 async def _default_approval(tool_name: str, summary: str) -> ApprovalDecision:
