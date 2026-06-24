@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -124,3 +125,106 @@ async def test_check_alias_runs_health_check(monkeypatch):
     args = cli._build_parser().parse_args(["check"])
 
     assert await cli._async_main(args) == 3
+
+
+def test_slash_command_helpers():
+    assert cli._is_quit_command("/quit")
+    assert cli._is_quit_command("/q")
+    assert cli._is_reset_command("/reset")
+    assert cli._is_model_picker_command("/models")
+    assert cli._is_model_picker_command("/model")
+    assert cli._is_help_command("/help")
+    assert cli._is_help_command("/")
+    assert cli._is_plan_command("/plan")
+    assert cli._is_plan_command("/plan on")
+    assert cli._model_name_from_command("/model qwen3:14b") == "qwen3:14b"
+    assert cli._slash_filter("/sta") == "/sta"
+    assert cli._slash_filter("/status") is None
+    assert cli._slash_filter("normal prompt") is None
+
+
+def test_command_palette_renders(capsys):
+    cli._print_command_palette()
+
+    out = capsys.readouterr().out
+    assert "/models" in out
+    assert "/permissions" in out
+    assert "/plan" in out
+    assert "/sessions" in out
+
+
+def test_tools_and_permissions_render(capsys):
+    args = cli._build_parser().parse_args([])
+
+    cli._print_tools_table()
+    cli._print_permissions(args)
+
+    out = capsys.readouterr().out
+    assert "read_file" in out
+    assert "exec" in out
+    assert "Approval" in out
+
+
+def test_status_renders(capsys):
+    args = cli._build_parser().parse_args([])
+    settings = replace(cli.load_settings(), model="m")
+
+    cli._print_status(settings, args)
+
+    out = capsys.readouterr().out
+    assert "Status" in out
+    assert "model" in out
+    assert "m" in out
+
+
+def test_session_helpers_roundtrip(tmp_path):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    session = cli._new_session(settings)
+    result = SimpleNamespace(
+        final_message="done",
+        completed=True,
+        reason="done",
+        steps=[object(), object()],
+        total_tokens=12,
+    )
+
+    cli._append_session_turn(settings, session, "do thing", result, plan_mode=True)
+    sessions = cli._load_sessions(settings)
+
+    assert len(sessions) == 1
+    assert sessions[0]["turns"][0]["objective"] == "do thing"
+    assert sessions[0]["turns"][0]["plan_mode"] is True
+
+
+def test_sessions_and_memory_render(tmp_path, capsys):
+    settings = replace(cli.load_settings(), project_dir=str(tmp_path), model="m")
+    session = cli._new_session(settings)
+    result = SimpleNamespace(final_message="done", completed=True, reason="done", steps=[], total_tokens=0)
+    cli._append_session_turn(settings, session, "do thing", result, plan_mode=False)
+    (tmp_path / "MEMORY.md").write_text("remember this")
+
+    cli._print_sessions(settings)
+    cli._print_memory(settings)
+
+    out = capsys.readouterr().out
+    assert "Sessions" in out
+    assert "do thing" in out
+    assert "remember this" in out
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_approval_rejects_destructive_tools():
+    async def approve(name, summary):
+        return cli.ApprovalDecision(cli.ApprovalDecision.APPROVE)
+
+    plan_approval = cli._plan_mode_approval(approve)
+
+    assert not (await plan_approval("exec", "run shell")).approved
+    assert (await plan_approval("read_file", "read")).approved
+
+
+def test_plan_mode_objective_is_read_only():
+    out = cli._plan_mode_objective("change the app")
+    assert "PLAN MODE" in out
+    assert "Do not edit files" in out
+    assert "change the app" in out

@@ -14,9 +14,13 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -25,8 +29,9 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .agent import CodeClawAgent
+from .agent import DESTRUCTIVE_TOOLS, CodeClawAgent
 from .config import load_settings
+from .memory import load_project_context
 from .ollama import OllamaClient, OllamaError
 from .tools import build_default_registry
 from .tools.base import ApprovalDecision
@@ -34,6 +39,21 @@ from .tools.base import ApprovalDecision
 logger = logging.getLogger("codeclaw")
 
 CONSOLE = Console()
+
+SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("/help", "Show available slash commands."),
+    ("/status", "Show current model, project, approval mode, and git state."),
+    ("/plan", "Toggle read-only planning mode for future prompts."),
+    ("/sessions", "List saved sessions for this project."),
+    ("/memory", "Show loaded AGENTS.md and MEMORY.md context."),
+    ("/tools", "List available CodeClaw tools."),
+    ("/permissions", "Show which tools require approval in this session."),
+    ("/diff", "Show the current git diff summary."),
+    ("/models", "Choose from installed Ollama models."),
+    ("/model NAME", "Switch directly to a model."),
+    ("/reset", "Clear the current prompt flow."),
+    ("/quit", "Exit CodeClaw."),
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -256,7 +276,7 @@ def _print_repl_header(settings, *, console: Console = CONSOLE) -> None:
     table.add_row("project", f"[cyan]{settings.project_dir}[/cyan]")
     table.add_row(
         "commands",
-        "[bold]:q[/bold] quit   [bold]:reset[/bold] clear   [bold]:model[/bold] choose   [bold]:model NAME[/bold] switch",
+        "[bold]/help[/bold] commands   [bold]/plan[/bold] plan mode   [bold]/models[/bold] choose   [bold]/status[/bold] inspect",
     )
     console.print(
         Panel(
@@ -267,6 +287,177 @@ def _print_repl_header(settings, *, console: Console = CONSOLE) -> None:
             padding=(1, 2),
         )
     )
+
+
+def _print_command_palette(filter_text: str = "", *, console: Console = CONSOLE) -> None:
+    needle = filter_text.lower().strip().removeprefix("/")
+    table = Table(title="Slash Commands", show_header=True, header_style="bold cyan")
+    table.add_column("Command", style="bold green", no_wrap=True)
+    table.add_column("Description", overflow="fold")
+    shown = 0
+    for command, description in SLASH_COMMANDS:
+        searchable = f"{command} {description}".lower()
+        if needle and needle not in searchable:
+            continue
+        table.add_row(command, description)
+        shown += 1
+    if shown:
+        console.print(table)
+    else:
+        console.print(f"[yellow]No slash commands match[/yellow] [bold]/{needle}[/bold]. Try [bold]/help[/bold].")
+
+
+def _print_tools_table(*, console: Console = CONSOLE) -> None:
+    table = Table(title="Tools", show_header=True, header_style="bold cyan")
+    table.add_column("Tool", style="bold")
+    table.add_column("Approval", justify="center")
+    table.add_column("Description", overflow="fold")
+    for tool in build_default_registry()._tools.values():
+        approval = "yes" if tool.name in DESTRUCTIVE_TOOLS else "no"
+        table.add_row(tool.name, approval, tool.description)
+    console.print(table)
+
+
+def _print_permissions(args, *, console: Console = CONSOLE) -> None:
+    mode = "auto-approve" if args.auto_approve else "non-interactive deny" if args.non_interactive else "ask"
+    table = Table(title="Permissions", show_header=True, header_style="bold cyan")
+    table.add_column("Tool", style="bold")
+    table.add_column("Mode", justify="center")
+    table.add_column("Reason", overflow="fold")
+    for tool in build_default_registry().names():
+        if tool in DESTRUCTIVE_TOOLS:
+            table.add_row(tool, mode, "Mutates files, runs shell commands, or writes git history.")
+        else:
+            table.add_row(tool, "allow", "Read-only project inspection.")
+    console.print(table)
+
+
+def _print_status(settings, args, *, plan_mode: bool = False, session_id: str = "", console: Console = CONSOLE) -> None:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("model", f"[cyan]{settings.model}[/cyan]")
+    table.add_row("project", f"[cyan]{settings.project_dir}[/cyan]")
+    table.add_row("host", f"[cyan]{settings.ollama_host}[/cyan]")
+    table.add_row("steps", str(settings.max_steps))
+    table.add_row("temperature", str(settings.temperature))
+    table.add_row("approval", "auto-approve" if args.auto_approve else "non-interactive deny" if args.non_interactive else "ask")
+    table.add_row("mode", "plan" if plan_mode else "act")
+    if session_id:
+        table.add_row("session", session_id)
+    table.add_row("cwd", os.getcwd())
+    console.print(Panel(table, title="Status", border_style="cyan", padding=(1, 2)))
+
+
+def _session_dir(settings) -> Path:
+    return Path(settings.project_dir).resolve() / ".codeclaw" / "sessions"
+
+
+def _new_session(settings) -> dict:
+    created_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    session_id = created_at.replace(":", "").replace("-", "").replace("Z", "")
+    return {
+        "id": session_id,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "project_dir": str(Path(settings.project_dir).resolve()),
+        "model": settings.model,
+        "turns": [],
+    }
+
+
+def _save_session(settings, session: dict) -> Path:
+    session["updated_at"] = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    directory = _session_dir(settings)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{session['id']}.json"
+    path.write_text(json.dumps(session, indent=2), encoding="utf-8")
+    return path
+
+
+def _append_session_turn(settings, session: dict, objective: str, result, *, plan_mode: bool) -> None:
+    session["model"] = settings.model
+    session["turns"].append(
+        {
+            "objective": objective,
+            "final_message": result.final_message,
+            "completed": result.completed,
+            "reason": result.reason,
+            "steps": len(result.steps),
+            "tokens": result.total_tokens,
+            "plan_mode": plan_mode,
+            "created_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+    )
+    _save_session(settings, session)
+
+
+def _load_sessions(settings) -> list[dict]:
+    directory = _session_dir(settings)
+    sessions: list[dict] = []
+    if not directory.exists():
+        return sessions
+    for path in sorted(directory.glob("*.json"), reverse=True):
+        try:
+            sessions.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return sessions
+
+
+def _print_sessions(settings, *, console: Console = CONSOLE) -> None:
+    sessions = _load_sessions(settings)
+    if not sessions:
+        console.print(Panel("No saved sessions yet.", title="sessions", border_style="yellow"))
+        return
+    table = Table(title="Sessions", show_header=True, header_style="bold cyan")
+    table.add_column("ID", style="bold")
+    table.add_column("Updated")
+    table.add_column("Model", overflow="fold")
+    table.add_column("Turns", justify="right")
+    table.add_column("Last Objective", overflow="fold")
+    for session in sessions[:20]:
+        turns = session.get("turns") or []
+        last = turns[-1].get("objective", "") if turns else ""
+        table.add_row(
+            str(session.get("id", "?")),
+            str(session.get("updated_at", "?")),
+            str(session.get("model", "?")),
+            str(len(turns)),
+            last,
+        )
+    console.print(table)
+
+
+def _print_memory(settings, *, console: Console = CONSOLE) -> None:
+    context = load_project_context(settings.project_dir)
+    if not context:
+        console.print(Panel("No AGENTS.md or MEMORY.md found for this project.", title="memory", border_style="yellow"))
+        return
+    console.print(Panel(Markdown(context), title="memory", border_style="cyan", padding=(1, 2)))
+
+
+async def _git_output(project_dir: str, *args: str) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=project_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    return proc.returncode or 0, (out or b"").decode("utf-8", errors="replace")
+
+
+async def _print_diff(settings, *, console: Console = CONSOLE) -> None:
+    rc, out = await _git_output(settings.project_dir, "diff", "--stat")
+    if rc != 0:
+        console.print(Panel(out.strip() or "git diff failed", title="diff", border_style="red"))
+        return
+    if not out.strip():
+        console.print(Panel("No working-tree diff.", title="diff", border_style="green"))
+        return
+    console.print(Panel(out.rstrip(), title="diff --stat", border_style="yellow"))
 
 
 def _log_stream(console: Console = CONSOLE) -> Callable[[str], None]:
@@ -280,8 +471,12 @@ def _log_stream(console: Console = CONSOLE) -> Callable[[str], None]:
             console.rule(f"[bold cyan]{msg.strip()}[/bold cyan]", style="dim")
         elif msg.startswith("  [tool_calls"):
             console.print(f"[bold magenta]{msg.strip()}[/bold magenta]")
+        elif msg.startswith("  [thinking"):
+            console.print(f"[bold yellow]{msg.strip()}[/bold yellow]")
         elif msg.startswith("  [tokens"):
             console.print(f"[dim]{msg.strip()}[/dim]")
+        elif msg.startswith("  ?"):
+            console.print(Text(msg[3:], style="dim yellow"))
         elif msg.startswith("  >"):
             console.print(Text(msg[3:], style="green"))
         elif msg.startswith("$ "):
@@ -336,7 +531,83 @@ def _interactive_approval(args) -> Callable[[str, str], Awaitable[ApprovalDecisi
     return approve
 
 
+def _plan_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="plan mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _plan_mode_objective(objective: str) -> str:
+    return (
+        "PLAN MODE: Research and propose a concrete implementation plan. "
+        "Do not edit files, run shell commands, commit changes, or perform other side effects. "
+        "You may use read-only inspection tools. End with clear steps and risks.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _ask_repl_line(console: Console) -> str:
+    from rich.prompt import Prompt
+
+    console.print(
+        Panel(
+            "[dim]Type a prompt, or use [bold]/help[/bold], [bold]/plan[/bold], "
+            "[bold]/models[/bold], [bold]/status[/bold], [bold]/quit[/bold].[/dim]",
+            title="prompt",
+            border_style="green",
+            padding=(0, 1),
+        )
+    )
+    return Prompt.ask("[bold green]›[/bold green]", console=console).strip()
+
+
+def _is_quit_command(line: str) -> bool:
+    return line in ("/q", "/quit", "/exit")
+
+
+def _is_reset_command(line: str) -> bool:
+    return line == "/reset"
+
+
+def _is_model_picker_command(line: str) -> bool:
+    return line in ("/model", "/models")
+
+
+def _is_help_command(line: str) -> bool:
+    return line in ("/", "/help", "/?")
+
+
+def _is_plan_command(line: str) -> bool:
+    return line in ("/plan", "/plan on", "/plan off")
+
+
+def _slash_filter(line: str) -> str | None:
+    if not line.startswith("/") or " " in line:
+        return None
+    known = {
+        "/q", "/quit", "/exit", "/reset", "/model", "/models",
+        "/help", "/?", "/", "/status", "/tools", "/permissions", "/diff",
+        "/plan", "/sessions", "/memory",
+    }
+    return None if line in known else line
+
+
+def _model_name_from_command(line: str) -> str | None:
+    prefix = "/model "
+    if line.startswith(prefix):
+        return line[len(prefix):].strip()
+    return None
+
+
 async def _run_one_shot(settings, client, args, objective: str) -> int:
+    with suppress(OllamaError):
+        await client.show_model(settings.model)
     _print_session_header(settings, objective)
     approval = _interactive_approval(args)
     agent = CodeClawAgent(
@@ -355,47 +626,91 @@ async def _run_one_shot(settings, client, args, objective: str) -> int:
 
 
 async def _run_repl(settings, client, args) -> int:
-    from rich.prompt import Prompt
-
     console = CONSOLE
     _print_repl_header(settings, console=console)
     approval = _interactive_approval(args)
+    plan_mode = False
+    session = _new_session(settings)
+    _save_session(settings, session)
     while True:
         try:
-            line = Prompt.ask("[bold green]you[/bold green]", console=console).strip()
+            line = _ask_repl_line(console)
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]bye.[/dim]")
             return 0
         if not line:
             continue
-        if line in (":q", ":quit", ":exit"):
-            return 0
-        if line == ":reset":
-            console.print("[dim]No persistent conversation state yet; each request starts fresh.[/dim]")
+        if _is_help_command(line):
+            _print_command_palette(console=console)
             continue
-        if line in (":model", ":models"):
+        filter_text = _slash_filter(line)
+        if filter_text:
+            _print_command_palette(filter_text, console=console)
+            continue
+        if _is_quit_command(line):
+            return 0
+        if _is_reset_command(line):
+            session = _new_session(settings)
+            _save_session(settings, session)
+            console.print(f"[dim]Started a fresh session:[/dim] [cyan]{session['id']}[/cyan]")
+            continue
+        if _is_plan_command(line):
+            if line == "/plan on":
+                plan_mode = True
+            elif line == "/plan off":
+                plan_mode = False
+            else:
+                plan_mode = not plan_mode
+            state = "on" if plan_mode else "off"
+            console.print(Panel(f"Plan mode is now [bold]{state}[/bold].", title="plan", border_style="yellow"))
+            continue
+        if line == "/status":
+            _print_status(settings, args, plan_mode=plan_mode, session_id=session["id"], console=console)
+            continue
+        if line == "/sessions":
+            _print_sessions(settings, console=console)
+            continue
+        if line == "/memory":
+            _print_memory(settings, console=console)
+            continue
+        if line == "/tools":
+            _print_tools_table(console=console)
+            continue
+        if line == "/permissions":
+            _print_permissions(args, console=console)
+            continue
+        if line == "/diff":
+            await _print_diff(settings, console=console)
+            continue
+        if _is_model_picker_command(line):
             selected = await _select_model(client, settings, console=console)
             if selected is not None:
                 settings = selected
             continue
-        if line.startswith(":model "):
-            new_model = line.split(" ", 1)[1].strip()
-
+        new_model = _model_name_from_command(line)
+        if new_model:
             settings = replace(settings, model=new_model)
+            with suppress(OllamaError):
+                await client.show_model(settings.model)
             console.print(f"[dim]model ->[/dim] [cyan]{new_model}[/cyan]")
             continue
-        console.print(Panel(Text(line, overflow="fold"), title="objective", border_style="green"))
+        title = "plan objective" if plan_mode else "objective"
+        border = "yellow" if plan_mode else "green"
+        console.print(Panel(Text(line, overflow="fold"), title=title, border_style=border))
+        approval_for_run = _plan_mode_approval(approval) if plan_mode else approval
+        objective = _plan_mode_objective(line) if plan_mode else line
         agent = CodeClawAgent(
             settings=settings,
             client=client,
-            approval=approval,
+            approval=approval_for_run,
             log=_log_stream(console),
         )
         try:
-            result = await agent.run(line)
+            result = await agent.run(objective)
         except OllamaError as exc:
             console.print(f"[red]error: {exc}[/red]")
             continue
+        _append_session_turn(settings, session, line, result, plan_mode=plan_mode)
         _print_final_report(result, console=console)
 
 

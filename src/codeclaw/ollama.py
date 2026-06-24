@@ -61,6 +61,7 @@ class ChatResponse:
     tool_calls: list[ToolCall]
     model: str
     done_reason: str
+    thinking: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
 
@@ -199,6 +200,7 @@ class OllamaClient:
         self.host = host.rstrip("/")
         self._timeout = httpx.Timeout(timeout_s, connect=10.0)
         self._client = httpx.AsyncClient(timeout=self._timeout)
+        self._capabilities_by_model: dict[str, list[str]] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -212,7 +214,13 @@ class OllamaClient:
     async def list_models(self) -> list[dict[str, Any]]:
         r = await self._client.get(f"{self.host}/api/tags")
         r.raise_for_status()
-        return r.json().get("models", [])
+        models = r.json().get("models", [])
+        for model in models:
+            name = model.get("name") or model.get("model")
+            caps = model.get("capabilities") or []
+            if name and caps:
+                self._remember_capabilities(str(name), caps)
+        return models
 
     async def show_model(self, model: str) -> dict[str, Any]:
         r = await self._client.post(f"{self.host}/api/show", json={"model": model})
@@ -222,7 +230,22 @@ class OllamaClient:
             except json.JSONDecodeError:
                 detail = r.text
             raise OllamaError(f"Ollama returned {r.status_code}: {detail}")
-        return r.json()
+        data = r.json()
+        self._remember_capabilities(model, data.get("capabilities") or [])
+        return data
+
+    def _remember_capabilities(self, model: str, capabilities: list[str]) -> None:
+        self._capabilities_by_model = getattr(self, "_capabilities_by_model", {})
+        self._capabilities_by_model[model] = [str(cap) for cap in capabilities]
+
+    async def model_capabilities(self, model: str) -> list[str]:
+        cache = getattr(self, "_capabilities_by_model", {})
+        if model in cache:
+            return cache[model]
+        try:
+            return list((await self.show_model(model)).get("capabilities") or [])
+        except (httpx.HTTPError, OllamaError):
+            return []
 
     async def model_supports_tools(self, model: str) -> bool:
         try:
@@ -231,14 +254,12 @@ class OllamaClient:
             raise OllamaError(f"Failed to list models: {exc}") from exc
         for m in models:
             if m.get("name") == model or m.get("model") == model:
-                caps = m.get("capabilities") or []
-                if not caps:
-                    try:
-                        caps = (await self.show_model(model)).get("capabilities") or []
-                    except (httpx.HTTPError, OllamaError):
-                        caps = []
+                caps = await self.model_capabilities(model)
                 return "tools" in caps
         return False
+
+    async def model_supports_thinking(self, model: str) -> bool:
+        return "thinking" in getattr(self, "_capabilities_by_model", {}).get(model, [])
 
     async def chat(
         self,
@@ -260,6 +281,8 @@ class OllamaClient:
             "stream": False,
             "options": {"temperature": temperature},
         }
+        if await self.model_supports_thinking(model):
+            payload["think"] = True
         if tools:
             payload["tools"] = tools
         if json_mode:
@@ -281,6 +304,7 @@ class OllamaClient:
         data = r.json()
         msg = data.get("message", {}) or {}
         content = msg.get("content", "") or ""
+        thinking = msg.get("thinking", "") or ""
         tool_calls: list[ToolCall] = []
         for tc in msg.get("tool_calls") or []:
             fn = (tc or {}).get("function") or {}
@@ -312,6 +336,7 @@ class OllamaClient:
             tool_calls=tool_calls,
             model=data.get("model", model),
             done_reason=data.get("done_reason", "stop"),
+            thinking=thinking,
             prompt_tokens=data.get("prompt_eval_count", 0),
             completion_tokens=data.get("eval_count", 0),
         )

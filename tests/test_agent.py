@@ -48,6 +48,13 @@ def _text_response(content: str) -> ChatResponse:
     )
 
 
+def _thinking_response(thinking: str, content: str) -> ChatResponse:
+    return ChatResponse(
+        content=content, tool_calls=[], model="fake",
+        done_reason="stop", thinking=thinking, prompt_tokens=1, completion_tokens=1,
+    )
+
+
 def _tool_response(name: str, args: dict) -> ChatResponse:
     return ChatResponse(
         content="", tool_calls=[ToolCall(name=name, arguments=args)],
@@ -66,6 +73,19 @@ async def test_agent_terminates_on_text_response(tmp_path):
     assert result.completed
     assert result.final_message == "All done."
     assert result.reason == "done"
+
+
+@pytest.mark.asyncio
+async def test_agent_logs_thinking_when_present(tmp_path):
+    settings = replace(Settings(), project_dir=str(tmp_path), max_steps=5)
+    client = FakeClient([_thinking_response("I need to inspect the request.", "All done.")])
+    log_lines: list[str] = []
+    agent = CodeClawAgent(settings=settings, client=client, log=log_lines.append)
+    result = await agent.run("do the thing")
+
+    assert result.completed
+    assert "  [thinking]" in log_lines
+    assert "  ? I need to inspect the request." in log_lines
 
 
 @pytest.mark.asyncio

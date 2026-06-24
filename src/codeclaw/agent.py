@@ -195,6 +195,10 @@ class CodeClawAgent:
         return result
 
     def _log_assistant(self, resp: ChatResponse) -> None:
+        if resp.thinking:
+            self.log("  [thinking]")
+            for line in resp.thinking.splitlines() or [""]:
+                self.log(f"  ? {line}")
         if resp.content:
             for line in resp.content.splitlines() or [""]:
                 self.log(f"  > {line}")

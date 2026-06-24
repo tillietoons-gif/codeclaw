@@ -24,6 +24,54 @@ def _ok(status: int, payload: dict | str) -> httpx.Response:
 
 
 @pytest.mark.asyncio
+async def test_chat_requests_and_parses_thinking():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat"
+        body = json.loads(request.content)
+        assert body["think"] is True
+        return _ok(200, {
+            "model": "m",
+            "done_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "thinking": "I should add the numbers.",
+                "content": "4",
+            },
+        })
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        client = OllamaClient.__new__(OllamaClient)
+        client.host = "http://x"
+        client._timeout = httpx.Timeout(5)
+        client._client = http
+        client._remember_capabilities("m", ["completion", "thinking"])
+        resp = await client.chat(model="m", messages=[ChatMessage("user", "2+2?")])
+
+    assert resp.thinking == "I should add the numbers."
+    assert resp.content == "4"
+
+
+@pytest.mark.asyncio
+async def test_chat_does_not_request_thinking_without_capability():
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "think" not in body
+        return _ok(200, {
+            "model": "m",
+            "message": {"role": "assistant", "content": "ok"},
+        })
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        client = OllamaClient.__new__(OllamaClient)
+        client.host = "http://x"
+        client._timeout = httpx.Timeout(5)
+        client._client = http
+        resp = await client.chat(model="m", messages=[ChatMessage("user", "hi")])
+
+    assert resp.content == "ok"
+
+
+@pytest.mark.asyncio
 async def test_chat_parses_text_response():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/chat"

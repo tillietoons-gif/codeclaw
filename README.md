@@ -61,6 +61,23 @@ codeclaw check
 codeclaw "add a Makefile that runs pytest"
 ```
 
+Inside the interactive console, commands start with `/`:
+
+```text
+/help            show available slash commands
+/status          show current model, project, approval mode, and session
+/plan            toggle read-only planning mode
+/sessions        list saved sessions in .codeclaw/sessions
+/memory          show loaded AGENTS.md and MEMORY.md context
+/tools           list available tools
+/permissions     show approval rules for tools
+/diff            show current git diff summary
+/models          choose from installed Ollama models
+/model qwen3:14b switch directly to a model
+/reset           start a fresh saved session
+/quit            exit
+```
+
 ## Tools
 
 | Tool          | Read/Write | Approval required |
