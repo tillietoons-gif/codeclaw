@@ -151,6 +151,44 @@ async def test_list_models_parses_payload():
 
 
 @pytest.mark.asyncio
+async def test_show_model_parses_capabilities():
+    def handler(request):
+        assert request.url.path == "/api/show"
+        body = json.loads(request.content)
+        assert body["model"] == "qwen2.5-coder:32b"
+        return _ok(200, {
+            "capabilities": ["completion", "tools"],
+            "model_info": {"qwen2.context_length": 32768},
+        })
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        client = OllamaClient.__new__(OllamaClient)
+        client.host = "http://x"
+        client._timeout = httpx.Timeout(5)
+        client._client = http
+        model = await client.show_model("qwen2.5-coder:32b")
+    assert model["capabilities"] == ["completion", "tools"]
+    assert model["model_info"]["qwen2.context_length"] == 32768
+
+
+@pytest.mark.asyncio
+async def test_model_supports_tools_falls_back_to_show_model():
+    def handler(request):
+        if request.url.path == "/api/tags":
+            return _ok(200, {"models": [{"name": "m"}]})
+        if request.url.path == "/api/show":
+            return _ok(200, {"capabilities": ["completion", "tools"]})
+        raise AssertionError(request.url.path)
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        client = OllamaClient.__new__(OllamaClient)
+        client.host = "http://x"
+        client._timeout = httpx.Timeout(5)
+        client._client = http
+        assert await client.model_supports_tools("m") is True
+
+
+@pytest.mark.asyncio
 async def test_chat_falls_back_to_inline_json_tool_call():
     """Some models emit tool calls inside `content` as raw JSON. Verify the
     parser extracts them and clears the visible content."""
@@ -200,6 +238,33 @@ async def test_chat_falls_back_with_markdown_fence_and_prose():
     assert len(resp.tool_calls) == 1
     assert resp.tool_calls[0].name == "list_dir"
     assert resp.tool_calls[0].arguments == {"path": "."}
+
+
+@pytest.mark.asyncio
+async def test_chat_falls_back_from_tool_name_plus_json_args():
+    def handler(request):
+        return _ok(200, {
+            "model": "m",
+            "message": {
+                "role": "assistant",
+                "content": 'exec\n{"command": "mkdir landing", "timeout_s": 10}',
+            },
+        })
+
+    async with httpx.AsyncClient(transport=_transport(handler)) as http:
+        client = OllamaClient.__new__(OllamaClient)
+        client.host = "http://x"
+        client._timeout = httpx.Timeout(5)
+        client._client = http
+        resp = await client.chat(
+            model="m",
+            messages=[ChatMessage("user", "create a folder")],
+            tools=[{"type": "function", "function": {"name": "exec", "description": "", "parameters": {}}}],
+        )
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0].name == "exec"
+    assert resp.tool_calls[0].arguments == {"command": "mkdir landing", "timeout_s": 10}
+    assert resp.content == ""
 
 
 @pytest.mark.asyncio

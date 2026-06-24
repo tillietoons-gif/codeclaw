@@ -9,6 +9,17 @@ from pathlib import Path
 from .base import Tool, ToolContext, ToolResult
 
 
+def _resolve_cwd(project_dir: str, cwd: str | None) -> Path:
+    root = Path(project_dir).resolve()
+    path = Path(cwd) if cwd else root
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"cwd escapes project directory: {cwd}")
+    return resolved
+
+
 class ExecTool(Tool):
     name = "exec"
     description = (
@@ -16,9 +27,7 @@ class ExecTool(Tool):
         "stdout/stderr. Use this for: running tests, inspecting builds, "
         "querying git, listing files, installing deps, etc. The shell is "
         "non-interactive; do not invoke REPLs or anything that needs a TTY. "
-        "Long-running commands should set a sensible `timeout_s`. Commands "
-        "matching any pattern in CODECLAW_DANGEROUS_PATTERNS require explicit "
-        "human approval before they run."
+        "Long-running commands should set a sensible `timeout_s`."
     )
     parameters = {
         "type": "object",
@@ -34,8 +43,10 @@ class ExecTool(Tool):
     async def run(self, args, ctx: ToolContext) -> ToolResult:
         cmd = args["command"]
         timeout = max(1, min(int(args.get("timeout_s", 60)), 600))
-        cwd = args.get("cwd") or ctx.cwd
-        cwd_path = Path(cwd).resolve()
+        try:
+            cwd_path = _resolve_cwd(ctx.cwd, args.get("cwd"))
+        except ValueError as exc:
+            return ToolResult(str(exc), is_error=True)
         if not cwd_path.exists():
             return ToolResult(f"cwd does not exist: {cwd_path}", is_error=True)
 

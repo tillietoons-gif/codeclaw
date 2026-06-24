@@ -37,13 +37,6 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def _env_list(name: str, default: list[str]) -> list[str]:
-    raw = _env(name, "")
-    if not raw:
-        return list(default)
-    return [p.strip() for p in raw.split(",") if p.strip()]
-
-
 @dataclass(frozen=True)
 class Settings:
     ollama_host: str = field(default_factory=lambda: _env("OLLAMA_HOST", "http://127.0.0.1:11434"))
@@ -51,26 +44,6 @@ class Settings:
     max_steps: int = field(default_factory=lambda: _env_int("CODECLAW_MAX_STEPS", 40))
     context_tokens: int = field(default_factory=lambda: _env_int("CODECLAW_CONTEXT_TOKENS", 24000))
     temperature: float = field(default_factory=lambda: _env_float("CODECLAW_TEMPERATURE", 0.2))
-    dangerous_patterns: list[str] = field(
-        default_factory=lambda: _env_list(
-            "CODECLAW_DANGEROUS_PATTERNS",
-            [
-                "rm -rf",
-                "rm -fr",
-                "sudo ",
-                "mkfs",
-                "dd if=",
-                "shutdown",
-                "reboot",
-                ":(){:|:&};:",
-                "git push --force",
-                "git push -f",
-                "DROP TABLE",
-                "TRUNCATE",
-                "chmod -R 777",
-            ],
-        )
-    )
     project_dir: str = field(default_factory=lambda: _env("CODECLAW_PROJECT_DIR", "."))
     request_timeout_s: float = field(default_factory=lambda: _env_float("CODECLAW_REQUEST_TIMEOUT", 300.0))
 

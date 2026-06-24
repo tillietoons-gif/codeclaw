@@ -8,10 +8,14 @@ from .base import Tool, ToolContext, ToolResult
 
 
 def _resolve(cwd: str, path: str) -> Path:
+    root = Path(cwd).resolve()
     p = Path(path)
     if not p.is_absolute():
-        p = Path(cwd) / p
-    return p.resolve()
+        p = root / p
+    resolved = p.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"path escapes project directory: {path}")
+    return resolved
 
 
 class ReadFileTool(Tool):
@@ -32,7 +36,10 @@ class ReadFileTool(Tool):
     }
 
     async def run(self, args, ctx: ToolContext) -> ToolResult:
-        path = _resolve(ctx.cwd, args["path"])
+        try:
+            path = _resolve(ctx.cwd, args["path"])
+        except ValueError as exc:
+            return ToolResult(str(exc), is_error=True)
         if not path.exists():
             return ToolResult(f"File not found: {path}", is_error=True)
         if not path.is_file():
@@ -68,7 +75,10 @@ class WriteFileTool(Tool):
     requires_approval = True
 
     async def run(self, args, ctx: ToolContext) -> ToolResult:
-        path = _resolve(ctx.cwd, args["path"])
+        try:
+            path = _resolve(ctx.cwd, args["path"])
+        except ValueError as exc:
+            return ToolResult(str(exc), is_error=True)
         content = args.get("content", "")
         existed = path.exists()
         try:
@@ -100,7 +110,10 @@ class EditFileTool(Tool):
     requires_approval = True
 
     async def run(self, args, ctx: ToolContext) -> ToolResult:
-        path = _resolve(ctx.cwd, args["path"])
+        try:
+            path = _resolve(ctx.cwd, args["path"])
+        except ValueError as exc:
+            return ToolResult(str(exc), is_error=True)
         old = args["old_text"]
         new = args["new_text"]
         if not path.exists():
@@ -147,7 +160,10 @@ class ListDirTool(Tool):
     }
 
     async def run(self, args, ctx: ToolContext) -> ToolResult:
-        path = _resolve(ctx.cwd, args.get("path", "."))
+        try:
+            path = _resolve(ctx.cwd, args.get("path", "."))
+        except ValueError as exc:
+            return ToolResult(str(exc), is_error=True)
         if not path.exists():
             return ToolResult(f"Directory not found: {path}", is_error=True)
         if not path.is_dir():

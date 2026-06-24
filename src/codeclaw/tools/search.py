@@ -9,6 +9,17 @@ from pathlib import Path
 from .base import Tool, ToolContext, ToolResult
 
 
+def _resolve_under_root(cwd: str, path: str) -> Path:
+    root = Path(cwd).resolve()
+    p = Path(path)
+    if not p.is_absolute():
+        p = root / p
+    resolved = p.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"path escapes project directory: {path}")
+    return resolved
+
+
 class GrepTool(Tool):
     name = "grep"
     description = (
@@ -32,10 +43,10 @@ class GrepTool(Tool):
 
     async def run(self, args, ctx: ToolContext) -> ToolResult:
         pattern = args["pattern"]
-        base = Path(args.get("path") or ctx.cwd)
-        if not base.is_absolute():
-            base = Path(ctx.cwd) / base
-        base = base.resolve()
+        try:
+            base = _resolve_under_root(ctx.cwd, args.get("path") or ".")
+        except ValueError as exc:
+            return ToolResult(str(exc), is_error=True)
         glob = args.get("glob")
         cap = int(args.get("max_results", 200))
         flags = re.IGNORECASE if args.get("ignore_case") else 0

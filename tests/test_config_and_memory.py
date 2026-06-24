@@ -12,7 +12,7 @@ def test_defaults_when_no_env(monkeypatch, tmp_path):
     for k in (
         "OLLAMA_HOST", "CODECLAW_MODEL", "CODECLAW_MAX_STEPS",
         "CODECLAW_CONTEXT_TOKENS", "CODECLAW_TEMPERATURE",
-        "CODECLAW_DANGEROUS_PATTERNS", "CODECLAW_PROJECT_DIR",
+        "CODECLAW_PROJECT_DIR",
     ):
         monkeypatch.delenv(k, raising=False)
     s = load_settings()
@@ -20,7 +20,6 @@ def test_defaults_when_no_env(monkeypatch, tmp_path):
     assert s.model == "qwen2.5-coder:32b"
     assert s.max_steps == 40
     assert s.temperature == 0.2
-    assert "rm -rf" in s.dangerous_patterns
 
 
 def test_env_overrides(monkeypatch, tmp_path):

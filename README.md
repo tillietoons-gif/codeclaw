@@ -51,14 +51,14 @@ ollama pull qwen2.5-coder:32b
 ## Quick start
 
 ```bash
-# Sanity-check the connection and the model.
-codeclaw --check
+# Open the interactive console UI. Pick a model, then type objectives.
+codeclaw
+
+# Sanity-check the connection and installed models.
+codeclaw check
 
 # One-shot: give the agent an objective and walk away.
-codeclaw "add a pyproject.toml that depends on httpx and pytest, plus a tests/ folder with one passing test"
-
-# Interactive REPL
-codeclaw repl
+codeclaw "add a Makefile that runs pytest"
 ```
 
 ## Tools
@@ -75,10 +75,6 @@ codeclaw repl
 | `edit_file`   | write      | **yes**           |
 | `exec`        | side-effect| **yes**           |
 | `git_commit`  | write      | **yes**           |
-
-The `exec` tool refuses to run anything matching a configurable
-`CODECLAW_DANGEROUS_PATTERNS` list (defaults cover `rm -rf`, `sudo`,
-`mkfs`, `dd`, force-pushes, etc.) without explicit approval.
 
 ## How it works
 
@@ -131,11 +127,10 @@ All settings come from environment variables (or `.env`):
 | `CODECLAW_MAX_STEPS`        | `40`                       | Hard cap on agent steps                  |
 | `CODECLAW_CONTEXT_TOKENS`   | `24000`                    | Sliding-window budget for prompt         |
 | `CODECLAW_TEMPERATURE`      | `0.2`                      | Sampling temperature                     |
-| `CODECLAW_DANGEROUS_PATTERNS` | (see file)               | Comma-separated patterns to gate         |
 | `CODECLAW_PROJECT_DIR`      | `.`                        | Working directory for tools              |
 
-CLI flags override env vars: `--model`, `--project-dir`, `--max-steps`,
-`--temperature`, `--auto-approve`, `--non-interactive`.
+CLI flags override env vars: `--model`, `--select-model`, `--project-dir`,
+`--max-steps`, `--temperature`, `--auto-approve`, `--non-interactive`.
 
 ## Testing
 

@@ -154,6 +154,25 @@ async def test_rejected_action_returns_error_to_model(tmp_path):
     assert any("REJECTED" in m.content for m in last if m.role == "tool")
 
 
+@pytest.mark.asyncio
+async def test_auto_approval_runs_exec_without_pattern_filter(tmp_path):
+    settings = replace(Settings(), project_dir=str(tmp_path), max_steps=5)
+    marker = tmp_path / "marker.txt"
+    client = FakeClient([
+        _tool_response("exec", {"command": f"echo ok > {marker}; echo rm -rf"}),
+        _text_response("Done."),
+    ])
+
+    async def auto_approve(name, summary):
+        return ApprovalDecision(ApprovalDecision.APPROVE, reason="--auto-approve")
+
+    agent = CodeClawAgent(settings=settings, client=client, approval=auto_approve, log=lambda m: None)
+    result = await agent.run("run a command")
+
+    assert result.completed
+    assert marker.read_text().strip() == "ok"
+
+
 def test_approx_chars_counts_tool_calls_too():
     msgs = [
         ChatMessage("system", "sys"),

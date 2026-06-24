@@ -69,7 +69,10 @@ class OllamaError(RuntimeError):
     """Raised when the Ollama server returns a non-2xx response."""
 
 
-def _extract_tool_call_from_content(content: str) -> tuple[str, dict[str, Any]] | None:
+def _extract_tool_call_from_content(
+    content: str,
+    tool_names: set[str] | None = None,
+) -> tuple[str, dict[str, Any]] | None:
     """Best-effort extract a tool call JSON object from free-form text.
 
     The model is expected to emit something like:
@@ -94,7 +97,13 @@ def _extract_tool_call_from_content(content: str) -> tuple[str, dict[str, Any]] 
 
     # Find every top-level JSON object by scanning braces, then try to
     # parse each in order. Return the first that decodes to a tool-call
-    # shape: {"name": str, "arguments": ...}.
+    # shape: {"name": str, "arguments": ...}. Some models also print:
+    #
+    #     exec
+    #     {"command": "mkdir landing"}
+    #
+    # In that case, use the preceding line as the tool name and the object
+    # itself as arguments.
     for start, end in _iter_top_level_json_objects(text):
         candidate = text[start:end + 1]
         try:
@@ -114,7 +123,31 @@ def _extract_tool_call_from_content(content: str) -> tuple[str, dict[str, Any]] 
             if not isinstance(args, dict):
                 args = {"_raw": args}
             return name, args
+        prefix_tool = _tool_name_before_json(text[:start], tool_names)
+        if prefix_tool:
+            return prefix_tool, obj
     return None
+
+
+def _tool_name_before_json(prefix: str, tool_names: set[str] | None) -> str | None:
+    if not tool_names:
+        return None
+    for line in reversed(prefix.splitlines()):
+        candidate = line.strip().strip("`").strip()
+        if not candidate:
+            continue
+        return candidate if candidate in tool_names else None
+    return None
+
+
+def _tool_names_from_schemas(tools: list[dict[str, Any]] | None) -> set[str]:
+    names: set[str] = set()
+    for tool in tools or []:
+        fn = (tool or {}).get("function") or {}
+        name = fn.get("name")
+        if name:
+            names.add(str(name))
+    return names
 
 
 def _iter_top_level_json_objects(text: str):
@@ -181,6 +214,16 @@ class OllamaClient:
         r.raise_for_status()
         return r.json().get("models", [])
 
+    async def show_model(self, model: str) -> dict[str, Any]:
+        r = await self._client.post(f"{self.host}/api/show", json={"model": model})
+        if r.status_code != 200:
+            try:
+                detail = r.json()
+            except json.JSONDecodeError:
+                detail = r.text
+            raise OllamaError(f"Ollama returned {r.status_code}: {detail}")
+        return r.json()
+
     async def model_supports_tools(self, model: str) -> bool:
         try:
             models = await self.list_models()
@@ -189,6 +232,11 @@ class OllamaClient:
         for m in models:
             if m.get("name") == model or m.get("model") == model:
                 caps = m.get("capabilities") or []
+                if not caps:
+                    try:
+                        caps = (await self.show_model(model)).get("capabilities") or []
+                    except (httpx.HTTPError, OllamaError):
+                        caps = []
                 return "tools" in caps
         return False
 
@@ -251,7 +299,7 @@ class OllamaClient:
         # structured `tool_calls` channel. If the structured channel is
         # empty, look for an inline JSON tool call and parse it.
         if not tool_calls and content:
-            extracted = _extract_tool_call_from_content(content)
+            extracted = _extract_tool_call_from_content(content, _tool_names_from_schemas(tools))
             if extracted is not None:
                 name, args = extracted
                 tool_calls.append(ToolCall(name=name, arguments=args, raw=content))

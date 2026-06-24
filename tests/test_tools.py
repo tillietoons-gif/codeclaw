@@ -77,6 +77,22 @@ async def test_read_write_edit_roundtrip(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_filesystem_tools_reject_paths_outside_project(tmp_path):
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("secret")
+    reg = build_default_registry()
+    ctx = _ctx(tmp_path)
+
+    read_res = await reg.get("read_file").run({"path": str(outside)}, ctx)
+    write_res = await reg.get("write_file").run({"path": "../outside.txt", "content": "nope"}, ctx)
+
+    assert read_res.is_error
+    assert write_res.is_error
+    assert "escapes project directory" in read_res.output
+    assert outside.read_text() == "secret"
+
+
+@pytest.mark.asyncio
 async def test_list_dir_skips_dotfiles_and_venv(tmp_path):
     reg = build_default_registry()
     (tmp_path / "src").mkdir()
@@ -107,6 +123,22 @@ async def test_exec_timeout_kills_process(tmp_path):
     res = await reg.get("exec").run({"command": "sleep 5", "timeout_s": 1}, _ctx(tmp_path))
     assert res.is_error
     assert "timed out" in res.output
+
+
+@pytest.mark.asyncio
+async def test_exec_rejects_cwd_outside_project(tmp_path):
+    reg = build_default_registry()
+    res = await reg.get("exec").run({"command": "pwd", "cwd": ".."}, _ctx(tmp_path))
+    assert res.is_error
+    assert "escapes project directory" in res.output
+
+
+@pytest.mark.asyncio
+async def test_grep_rejects_path_outside_project(tmp_path):
+    reg = build_default_registry()
+    res = await reg.get("grep").run({"pattern": "anything", "path": ".."}, _ctx(tmp_path))
+    assert res.is_error
+    assert "escapes project directory" in res.output
 
 
 def test_destructive_tools_marked_correctly():
