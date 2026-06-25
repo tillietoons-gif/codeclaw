@@ -35,6 +35,14 @@ from .config import load_settings
 from .hooks import HOOK_EVENTS, HookResult, hook_counts, hook_settings_path, run_hooks
 from .memory import load_project_context
 from .ollama import OllamaClient, OllamaError
+from .providers import (
+    PROVIDER_TEMPLATES,
+    add_provider_from_template,
+    apply_provider,
+    load_providers,
+    resolve_active_provider,
+    save_active_provider,
+)
 from .tools import build_default_registry
 from .tools.base import ApprovalDecision
 
@@ -63,6 +71,8 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/changes", "Show git status and diff summary."),
     ("/tools", "List available CodeClaw tools."),
     ("/permissions", "Show which tools require approval in this session."),
+    ("/providers", "Show provider picker and switch active provider."),
+    ("/provider", "Show provider picker and switch active provider."),
     ("/diff", "Show the current git diff summary."),
     ("/models", "Choose from installed Ollama models."),
     ("/model NAME", "Switch directly to a model."),
@@ -74,6 +84,7 @@ CONFIG_KEYS = {
     "host": "ollama_host",
     "ollama_host": "ollama_host",
     "model": "model",
+    "provider": "provider",
     "max_steps": "max_steps",
     "context_tokens": "context_tokens",
     "temperature": "temperature",
@@ -352,6 +363,27 @@ def _print_tools_table(*, console: Console = CONSOLE) -> None:
         approval = "yes" if tool.name in DESTRUCTIVE_TOOLS else "no"
         table.add_row(tool.name, approval, tool.description)
     console.print(table)
+
+
+def _print_provider_picker(settings, *, console: Console = CONSOLE) -> None:
+    providers = load_providers(settings.project_dir, settings=settings)
+    table = Table(title="Providers", show_header=True, header_style="bold cyan")
+    table.add_column("Provider", style="bold")
+    table.add_column("Backend")
+    table.add_column("Default model", overflow="fold")
+    table.add_column("Active", justify="center")
+    active = settings.provider or ""
+    for provider_id, provider in sorted(providers.items()):
+        is_active = "yes" if provider_id == active else ""
+        table.add_row(provider_id, provider.backend, provider.default_model or "", is_active)
+    console.print(table)
+    console.print(
+        Panel(
+            "Use /provider <name> to switch, or /provider add <template> to add a new provider.",
+            title="providers",
+            border_style="cyan",
+        )
+    )
 
 
 def _print_permissions(args, *, console: Console = CONSOLE) -> None:
@@ -1039,6 +1071,21 @@ def _is_model_picker_command(line: str) -> bool:
     return line in ("/model", "/models")
 
 
+def _is_provider_picker_command(line: str) -> bool:
+    return line in ("/providers", "/provider")
+
+
+def _provider_command_args(line: str) -> tuple[str, str] | None:
+    if not line.startswith("/provider "):
+        return None
+    parts = line.strip().split(maxsplit=2)
+    if len(parts) == 3:
+        return parts[1], parts[2]
+    if len(parts) == 2:
+        return "switch", parts[1]
+    return None
+
+
 def _is_help_command(line: str) -> bool:
     return line in ("/", "/help", "/?")
 
@@ -1242,6 +1289,31 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
             title = "restore" if ok else "restore failed"
             console.print(Panel(message, title=title, border_style=border))
             continue
+        if line == "/providers":
+            _print_provider_picker(settings, console=console)
+            continue
+        if line == "/provider":
+            _print_provider_picker(settings, console=console)
+            continue
+        provider_args = _provider_command_args(line)
+        if provider_args is not None:
+            action, provider_id = provider_args
+            if action == "add":
+                ok, message, provider = add_provider_from_template(settings, provider_id)
+                if ok and provider is not None:
+                    console.print(Panel(message, title="provider added", border_style="green"))
+                else:
+                    console.print(Panel(message, title="provider add failed", border_style="red"))
+                continue
+            if action == "switch":
+                providers = load_providers(settings.project_dir, settings=settings)
+                if provider_id not in providers:
+                    console.print(Panel(f"Provider not found: {provider_id}", title="provider switch failed", border_style="red"))
+                    continue
+                save_active_provider(settings, provider_id)
+                settings = resolve_active_provider(settings)
+                console.print(Panel(f"Switched active provider to {provider_id}.", title="provider switched", border_style="green"))
+                continue
         if line == "/tools":
             _print_tools_table(console=console)
             continue
