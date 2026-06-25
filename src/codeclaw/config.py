@@ -12,9 +12,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from the current working directory if present, then from
-# the project root used at install time. This lets a user `cd` into a
-# project and have its `.env` take effect.
 load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[3] / ".env", override=False)
 
@@ -40,7 +37,11 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Settings:
+    provider: str = field(default_factory=lambda: _env("CODECLAW_PROVIDER", ""))
+    backend: str = field(default_factory=lambda: _env("CODECLAW_BACKEND", "ollama"))
     ollama_host: str = field(default_factory=lambda: _env("OLLAMA_HOST", "http://127.0.0.1:11434"))
+    openai_base_url: str = field(default_factory=lambda: _env("CODECLAW_OPENAI_BASE_URL", "http://127.0.0.1:8000/v1"))
+    openai_api_key: str = field(default_factory=lambda: _env("CODECLAW_OPENAI_API_KEY", ""))
     model: str = field(default_factory=lambda: _env("CODECLAW_MODEL", "qwen2.5-coder:32b"))
     max_steps: int = field(default_factory=lambda: _env_int("CODECLAW_MAX_STEPS", 40))
     context_tokens: int = field(default_factory=lambda: _env_int("CODECLAW_CONTEXT_TOKENS", 24000))
@@ -52,7 +53,19 @@ class Settings:
 def load_settings() -> Settings:
     """Build a fresh Settings from the current environment."""
     settings = Settings()
-    return _apply_project_defaults(settings)
+    settings = _apply_project_defaults(settings)
+    settings = _resolve_project_dir(settings)
+    from .providers import resolve_active_provider
+    return resolve_active_provider(settings)
+
+
+def _resolve_project_dir(settings: Settings) -> Settings:
+    from dataclasses import replace
+    raw = settings.project_dir.strip() or "."
+    resolved = str(Path(raw).resolve()) if raw != "." else str(Path.cwd().resolve())
+    if resolved == settings.project_dir:
+        return settings
+    return replace(settings, project_dir=resolved)
 
 
 def _apply_project_defaults(settings: Settings) -> Settings:
@@ -68,7 +81,11 @@ def _apply_project_defaults(settings: Settings) -> Settings:
         return settings
     overrides = {}
     env_map = {
+        "provider": "CODECLAW_PROVIDER",
+        "backend": "CODECLAW_BACKEND",
         "ollama_host": "OLLAMA_HOST",
+        "openai_base_url": "CODECLAW_OPENAI_BASE_URL",
+        "openai_api_key": "CODECLAW_OPENAI_API_KEY",
         "model": "CODECLAW_MODEL",
         "max_steps": "CODECLAW_MAX_STEPS",
         "context_tokens": "CODECLAW_CONTEXT_TOKENS",
@@ -87,5 +104,4 @@ def _apply_project_defaults(settings: Settings) -> Settings:
     if not overrides:
         return settings
     from dataclasses import replace
-
     return replace(settings, **overrides)
