@@ -57,6 +57,15 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/config", "Show project configuration defaults."),
     ("/set KEY VALUE", "Set project defaults such as model or host."),
     ("/plan", "Toggle read-only planning mode for future prompts."),
+    ("/planner", "Toggle planner mode: convert architecture into an execution plan."),
+    ("/executor", "Toggle executor mode: implement the approved task or phase exactly."),
+    ("/reviewer", "Toggle reviewer mode: inspect executor changes and report issues without editing code."),
+    ("/verifier", "Toggle verifier mode: verify implementation against the original request, approved spec, and approved plan."),
+    ("/memory-agent", "Toggle memory agent mode: maintain project memory across tasks."),
+    ("/context-agent", "Toggle context agent mode: retrieve only files and snippets needed for the current task."),
+    ("/command-agent", "Toggle command agent mode: suggest safe terminal commands for the current phase."),
+    ("/final-report-agent", "Toggle final report agent mode: summarize completed work and verification results."),
+    ("/fixer", "Toggle fixer mode: fix only issues reported by reviewer or verifier."),
     ("/compact", "Compact the current saved session context."),
     ("/todo", "Show the current session task list."),
     ("/sessions", "List saved sessions for this project."),
@@ -71,6 +80,7 @@ SLASH_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/changes", "Show git status and diff summary."),
     ("/tools", "List available CodeClaw tools."),
     ("/permissions", "Show which tools require approval in this session."),
+    ("/architect", "Toggle architect analysis mode: analyze the repo and define the implementation without writing code."),
     ("/providers", "Show provider picker and switch active provider."),
     ("/provider", "Show provider picker and switch active provider."),
     ("/diff", "Show the current git diff summary."),
@@ -112,6 +122,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--temperature", type=float, help="Override CODECLAW_TEMPERATURE")
     p.add_argument("--auto-approve", action="store_true", help="Approve all destructive actions without prompting (use with care).")
     p.add_argument("--non-interactive", action="store_true", help="Disable interactive prompts. Combine with --auto-approve for CI use.")
+    p.add_argument("--architect", action="store_true", help="Run in architect analysis mode: analyze the repo and define the implementation without writing code.")
+    p.add_argument("--planner", action="store_true", help="Run in planner mode: convert an architecture specification into a concrete execution plan.")
+    p.add_argument("--executor", action="store_true", help="Run in executor mode: implement only the approved task or phase.")
+    p.add_argument("--reviewer", action="store_true", help="Run in reviewer mode: inspect executor agent changes without editing code.")
+    p.add_argument("--verifier", action="store_true", help="Run in verifier mode: verify implementation against the original request, approved spec, and approved plan.")
+    p.add_argument("--fixer", action="store_true", help="Run in fixer mode: fix only issues reported by reviewer or verifier.")
+    p.add_argument("--memory-agent", action="store_true", help="Run in memory agent mode: maintain project memory across tasks.")
+    p.add_argument("--context-agent", action="store_true", help="Run in context agent mode: retrieve only the files and snippets needed for the current task.")
+    p.add_argument("--command-agent", action="store_true", help="Run in command agent mode: suggest safe terminal commands for the current phase.")
+    p.add_argument("--final-report-agent", action="store_true", help="Run in final report agent mode: summarize completed work and verification results.")
     p.add_argument("--check", action="store_true", help="Verify Ollama is reachable and the model is loaded, then exit.")
     p.add_argument("--tools", action="store_true", help="Print the tool registry as JSON and exit.")
     p.add_argument("--version", action="store_true", help="Print the CodeClaw version and exit.")
@@ -323,7 +343,7 @@ def _print_repl_header(settings, *, console: Console = CONSOLE) -> None:
     table.add_row("project", f"[cyan]{settings.project_dir}[/cyan]")
     table.add_row(
         "commands",
-        "[bold]/help[/bold] commands   [bold]/plan[/bold] plan mode   [bold]/models[/bold] choose   [bold]/status[/bold] inspect",
+        "[bold]/help[/bold] commands   [bold]/plan[/bold] plan mode   [bold]/planner[/bold] planner mode   [bold]/executor[/bold] executor mode   [bold]/reviewer[/bold] reviewer mode   [bold]/verifier[/bold] verifier mode   [bold]/memory-agent[/bold] memory agent mode   [bold]/context-agent[/bold] context agent mode   [bold]/fixer[/bold] fixer mode   [bold]/architect[/bold] architect mode   [bold]/models[/bold] choose   [bold]/status[/bold] inspect",
     )
     console.print(
         Panel(
@@ -400,7 +420,7 @@ def _print_permissions(args, *, console: Console = CONSOLE) -> None:
     console.print(table)
 
 
-def _print_status(settings, args, *, plan_mode: bool = False, session_id: str = "", console: Console = CONSOLE) -> None:
+def _print_status(settings, args, *, plan_mode: bool = False, planner_mode: bool = False, executor_mode: bool = False, reviewer_mode: bool = False, verifier_mode: bool = False, fixer_mode: bool = False, memory_mode: bool = False, context_mode: bool = False, command_mode: bool = False, final_report_mode: bool = False, architect_mode: bool = False, session_id: str = "", console: Console = CONSOLE) -> None:
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold")
     table.add_column()
@@ -410,7 +430,28 @@ def _print_status(settings, args, *, plan_mode: bool = False, session_id: str = 
     table.add_row("steps", str(settings.max_steps))
     table.add_row("temperature", str(settings.temperature))
     table.add_row("approval", "auto-approve" if args.auto_approve else "non-interactive deny" if args.non_interactive else "ask")
-    table.add_row("mode", "plan" if plan_mode else "act")
+    if executor_mode:
+        table.add_row("mode", "executor")
+    elif fixer_mode:
+        table.add_row("mode", "fixer")
+    elif memory_mode:
+        table.add_row("mode", "memory")
+    elif context_mode:
+        table.add_row("mode", "context")
+    elif command_mode:
+        table.add_row("mode", "command")
+    elif final_report_mode:
+        table.add_row("mode", "final-report")
+    elif verifier_mode:
+        table.add_row("mode", "verifier")
+    elif reviewer_mode:
+        table.add_row("mode", "reviewer")
+    elif planner_mode:
+        table.add_row("mode", "planner")
+    elif architect_mode:
+        table.add_row("mode", "architect")
+    else:
+        table.add_row("mode", "plan" if plan_mode else "act")
     if session_id:
         table.add_row("session", session_id)
     table.add_row("cwd", os.getcwd())
@@ -580,7 +621,7 @@ def _save_session(settings, session: dict) -> Path:
     return path
 
 
-def _append_session_turn(settings, session: dict, objective: str, result, *, plan_mode: bool) -> None:
+def _append_session_turn(settings, session: dict, objective: str, result, *, plan_mode: bool, planner_mode: bool = False, executor_mode: bool = False, reviewer_mode: bool = False, verifier_mode: bool = False, fixer_mode: bool = False, memory_mode: bool = False, context_mode: bool = False, command_mode: bool = False, final_report_mode: bool = False, architect_mode: bool = False) -> None:
     session["model"] = settings.model
     session["turns"].append(
         {
@@ -591,6 +632,16 @@ def _append_session_turn(settings, session: dict, objective: str, result, *, pla
             "steps": len(result.steps),
             "tokens": result.total_tokens,
             "plan_mode": plan_mode,
+            "planner_mode": planner_mode,
+            "executor_mode": executor_mode,
+            "reviewer_mode": reviewer_mode,
+            "verifier_mode": verifier_mode,
+            "fixer_mode": fixer_mode,
+            "memory_mode": memory_mode,
+            "context_mode": context_mode,
+            "command_mode": command_mode,
+            "final_report_mode": final_report_mode,
+            "architect_mode": architect_mode,
             "created_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }
     )
@@ -1034,6 +1085,218 @@ def _plan_mode_objective(objective: str) -> str:
     )
 
 
+def _planner_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="planner mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _planner_mode_objective(objective: str) -> str:
+    return (
+        "PLANNER MODE: Convert the architect specification into a detailed execution plan. "
+        "Break work into phases, tasks, dependencies, files to modify, and verification steps. "
+        "Do not write code. Focus on a sequence of concrete implementation actions.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _architect_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="architect mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _executor_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _reviewer_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="reviewer mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _reviewer_mode_objective(objective: str) -> str:
+    return (
+        "REVIEWER MODE: Review the executor agent's proposed or implemented changes. "
+        "Identify bugs, missing requirements, architecture flaws, security issues, style problems, and risks. "
+        "Do not edit files, write code, run shell commands, or commit changes. "
+        "Use read-only inspection tools and explain any issues clearly.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _verifier_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="verifier mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _verifier_mode_objective(objective: str) -> str:
+    return (
+        "VERIFIER MODE: Verify the implementation against the original user request, approved spec, and approved plan. "
+        "Confirm the requested behavior is satisfied and highlight any mismatches or missing requirements. "
+        "Do not edit files, write code, run shell commands, or commit changes. "
+        "Use read-only inspection tools and explain any discrepancies clearly.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _fixer_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="fixer mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _fixer_mode_objective(objective: str) -> str:
+    return (
+        "FIXER MODE: Fix only issues reported by the Reviewer Agent or Verifier Agent. "
+        "Do not add new features, refactor unrelated code, or deviate from the approved plan. "
+        "Use read-only inspection tools to identify the precise issue and apply minimal safe corrections.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _memory_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="memory agent mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _memory_mode_objective(objective: str) -> str:
+    return (
+        "MEMORY AGENT MODE: Maintain and update project memory across tasks. "
+        "Store repository structure, frameworks, conventions, important files, architecture decisions, and known problems. "
+        "Do not add new features or refactor unrelated code. "
+        "Use read-only inspection tools and summarize key context for future tasks.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _context_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="context agent mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _context_mode_objective(objective: str) -> str:
+    return (
+        "CONTEXT AGENT MODE: Retrieve only the files and snippets needed for the current task. "
+        "Do not edit files, run shell commands, commit changes, or add new features. "
+        "Focus on loading and summarizing relevant project context, file contents, and code references.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _command_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="command agent mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _command_mode_objective(objective: str) -> str:
+    return (
+        "COMMAND AGENT MODE: Suggest safe terminal commands for the current phase. "
+        "Prefer read-only commands first, avoid destructive operations, and explain why each command is needed. "
+        "Do not edit files, run shell commands, or commit changes automatically.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _final_report_mode_approval(base_approval) -> Callable[[str, str], Awaitable[ApprovalDecision]]:
+    async def approve(tool_name: str, summary: str) -> ApprovalDecision:
+        if tool_name in DESTRUCTIVE_TOOLS:
+            return ApprovalDecision(ApprovalDecision.REJECT, reason="final report agent mode is read-only")
+        result = base_approval(tool_name, summary)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+
+    return approve
+
+
+def _final_report_mode_objective(objective: str) -> str:
+    return (
+        "FINAL REPORT MODE: Summarize completed work, verification results, changed files, and remaining issues. "
+        "Do not edit files, run shell commands, or propose new implementation changes. "
+        "Focus on producing a clear final summary for the user.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _executor_mode_objective(objective: str) -> str:
+    return (
+        "EXECUTOR MODE: Implement only the approved task or phase exactly. "
+        "Use the current repository state and the approved plan. "
+        "Do not propose new plans or change the objective. "
+        "Execute the approved task with minimal safe changes.\n\n"
+        f"User objective: {objective}"
+    )
+
+
+def _architect_mode_objective(objective: str) -> str:
+    return (
+        "ARCHITECT MODE: Analyze the repository and design an implementation strategy. "
+        "Do not edit files, run shell commands, commit changes, or perform other side effects. "
+        "Provide architecture, specification, and implementation steps without producing working code.\n\n"
+        f"User objective: {objective}"
+    )
+
+
 def _ask_repl_line(console: Console) -> str:
     console.print(
         Panel(
@@ -1090,6 +1353,42 @@ def _is_help_command(line: str) -> bool:
     return line in ("/", "/help", "/?")
 
 
+def _is_planner_command(line: str) -> bool:
+    return line in ("/planner on", "/planner off")
+
+
+def _is_executor_command(line: str) -> bool:
+    return line in ("/executor on", "/executor off")
+
+
+def _is_reviewer_command(line: str) -> bool:
+    return line in ("/reviewer on", "/reviewer off")
+
+
+def _is_verifier_command(line: str) -> bool:
+    return line in ("/verifier on", "/verifier off")
+
+
+def _is_fixer_command(line: str) -> bool:
+    return line in ("/fixer on", "/fixer off")
+
+
+def _is_memory_agent_command(line: str) -> bool:
+    return line in ("/memory-agent on", "/memory-agent off")
+
+
+def _is_context_agent_command(line: str) -> bool:
+    return line in ("/context-agent on", "/context-agent off")
+
+
+def _is_command_agent_command(line: str) -> bool:
+    return line in ("/command-agent on", "/command-agent off")
+
+
+def _is_architect_command(line: str) -> bool:
+    return line in ("/architect on", "/architect off")
+
+
 def _is_plan_command(line: str) -> bool:
     return line in ("/plan", "/plan on", "/plan off")
 
@@ -1100,8 +1399,10 @@ def _slash_filter(line: str) -> str | None:
     known = {
         "/q", "/quit", "/exit", "/reset", "/model", "/models",
         "/help", "/?", "/", "/status", "/tools", "/permissions", "/diff",
-        "/init", "/config", "/compact", "/todo", "/plan", "/sessions", "/current", "/memory",
+        "/init", "/config", "/compact", "/todo", "/plan", "/planner", "/executor", "/reviewer", "/verifier", "/memory-agent", "/fixer", "/architect", "/sessions", "/current", "/memory",
         "/hooks", "/hook-example", "/checkpoint", "/checkpoints", "/changes",
+        "/command-agent",
+        "/final-report-agent",
     }
     if line.startswith(("/restore ", "/checkpoint ", "/resume ", "/set ")):
         return None
@@ -1123,10 +1424,46 @@ def _resume_id_from_command(line: str) -> str | None:
 
 
 async def _run_one_shot(settings, client, args, objective: str) -> int:
+    if _has_explicit_mode(args):
+        return await _run_one_shot_direct(settings, client, args, objective)
+    return await _run_orchestrated_flow(settings, client, args, objective)
+
+
+async def _run_one_shot_direct(settings, client, args, objective: str) -> int:
     with suppress(OllamaError):
         await client.show_model(settings.model)
     _print_session_header(settings, objective)
     approval = _interactive_approval(args)
+    if args.planner:
+        approval = _planner_mode_approval(approval)
+        objective = _planner_mode_objective(objective)
+    elif args.executor:
+        approval = _executor_mode_approval(approval)
+        objective = _executor_mode_objective(objective)
+    elif args.reviewer:
+        approval = _reviewer_mode_approval(approval)
+        objective = _reviewer_mode_objective(objective)
+    elif args.verifier:
+        approval = _verifier_mode_approval(approval)
+        objective = _verifier_mode_objective(objective)
+    elif args.fixer:
+        approval = _fixer_mode_approval(approval)
+        objective = _fixer_mode_objective(objective)
+    elif args.context_agent:
+        approval = _context_mode_approval(approval)
+        objective = _context_mode_objective(objective)
+    elif args.command_agent:
+        approval = _command_mode_approval(approval)
+        objective = _command_mode_objective(objective)
+    elif args.final_report_agent:
+        approval = _final_report_mode_approval(approval)
+        objective = _final_report_mode_objective(objective)
+    elif args.memory_agent:
+        approval = _memory_mode_approval(approval)
+        objective = _memory_mode_objective(objective)
+    elif args.architect:
+        approval = _architect_mode_approval(approval)
+        objective = _architect_mode_objective(objective)
     agent = CodeClawAgent(
         settings=settings,
         client=client,
@@ -1140,6 +1477,383 @@ async def _run_one_shot(settings, client, args, objective: str) -> int:
         return 1
     _print_final_report(result)
     return 0 if result.completed else 2
+
+
+def _has_explicit_mode(args) -> bool:
+    return any(
+        bool(getattr(args, attr, False))
+        for attr in (
+            "architect",
+            "planner",
+            "executor",
+            "reviewer",
+            "verifier",
+            "fixer",
+            "memory_agent",
+            "context_agent",
+            "command_agent",
+            "final_report_agent",
+        )
+    )
+
+
+def _determine_task_type(objective: str) -> str:
+    lower = objective.lower()
+    dangerous = ["delete", "remove", "destroy", "rm -rf", "shutdown", "wipe", "format disk", "drop table", "kill ", "destroy", "uninstall"]
+    if any(keyword in lower for keyword in dangerous):
+        return "dangerous"
+    complex_keywords = ["design", "architecture", "specification", "plan", "refactor", "optimize", "migration", "migrate", "performance", "integrate", "security", "secure"]
+    if any(keyword in lower for keyword in complex_keywords):
+        return "complex"
+    if len(objective.split()) < 12 and any(keyword in lower for keyword in ("add", "fix", "update", "implement", "correct", "patch")):
+        return "simple"
+    if len(objective) < 80:
+        return "simple"
+    return "complex"
+
+
+def _new_task_state(objective: str, args) -> dict:
+    return {
+        "user_request": objective,
+        "mode": "yolo" if bool(args.auto_approve) else "normal",
+        "repo_context": {},
+        "spec": {},
+        "plan": {},
+        "current_phase": "",
+        "completed_phases": [],
+        "changed_files": [],
+        "commands_run": [],
+        "review_results": [],
+        "verification_results": [],
+        "fix_attempts": 0,
+        "final_status": "pending",
+    }
+
+
+def _normalize_list(items: list[str]) -> list[str]:
+    seen = set()
+    normalized = []
+    for item in items:
+        if not item:
+            continue
+        if item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return normalized
+
+
+def _collect_run_metrics(result) -> tuple[list[str], list[str]]:
+    changed_files: list[str] = []
+    commands_run: list[str] = []
+    for step in getattr(result, "steps", []):
+        for tc in getattr(step, "tool_calls", []) or []:
+            if tc.name in ("write_file", "edit_file"):
+                path = tc.arguments.get("path")
+                if isinstance(path, str):
+                    changed_files.append(path)
+            elif tc.name == "git_commit":
+                changed_files.append("git_commit")
+            elif tc.name == "exec":
+                command = tc.arguments.get("command")
+                if isinstance(command, str):
+                    commands_run.append(command)
+    return _normalize_list(changed_files), _normalize_list(commands_run)
+
+
+def _verification_passed(result) -> bool:
+    if not result.completed:
+        return False
+    text = (result.final_message or "").lower()
+    negative_markers = ["fail", "failed", "error", "mismatch", "issue", "problem", "bug", "incorrect", "incomplete", "missing"]
+    if any(marker in text for marker in negative_markers):
+        if "no issue" in text or "no problems" in text or "all good" in text or "verified successfully" in text:
+            return True
+        return False
+    return True
+
+
+async def _ask_user_approval(args, plan_summary: str) -> bool:
+    if args.auto_approve:
+        return True
+    if args.non_interactive:
+        return False
+    from rich.prompt import Prompt
+
+    CONSOLE.print(Panel(Text(plan_summary, overflow="fold"), title="proposed plan", border_style="yellow", padding=(1, 2)))
+    choice = Prompt.ask(
+        "Approve this plan and continue with execution?",
+        choices=["y", "n"],
+        default="n",
+        console=CONSOLE,
+        show_choices=True,
+        show_default=True,
+    )
+    return choice == "y"
+
+
+async def _run_named_agent(settings, client, args, objective: str, mode_name: str) -> object:
+    approval = _interactive_approval(args)
+    if mode_name == "planner":
+        approval = _planner_mode_approval(approval)
+        objective = _planner_mode_objective(objective)
+    elif mode_name == "architect":
+        approval = _architect_mode_approval(approval)
+        objective = _architect_mode_objective(objective)
+    elif mode_name == "executor":
+        approval = _executor_mode_approval(approval)
+        objective = _executor_mode_objective(objective)
+    elif mode_name == "reviewer":
+        approval = _reviewer_mode_approval(approval)
+        objective = _reviewer_mode_objective(objective)
+    elif mode_name == "verifier":
+        approval = _verifier_mode_approval(approval)
+        objective = _verifier_mode_objective(objective)
+    elif mode_name == "fixer":
+        approval = _fixer_mode_approval(approval)
+        objective = _fixer_mode_objective(objective)
+    elif mode_name == "context_agent":
+        approval = _context_mode_approval(approval)
+        objective = _context_mode_objective(objective)
+    elif mode_name == "command_agent":
+        approval = _command_mode_approval(approval)
+        objective = _command_mode_objective(objective)
+    elif mode_name == "final_report_agent":
+        approval = _final_report_mode_approval(approval)
+        objective = _final_report_mode_objective(objective)
+    elif mode_name == "memory_agent":
+        approval = _memory_mode_approval(approval)
+        objective = _memory_mode_objective(objective)
+    else:
+        approval = _interactive_approval(args)
+    agent = CodeClawAgent(
+        settings=settings,
+        client=client,
+        approval=approval,
+        log=_log_stream(CONSOLE),
+    )
+    return await agent.run(objective)
+
+
+async def _run_orchestrated_flow(settings, client, args, objective: str) -> int:
+    with suppress(OllamaError):
+        await client.show_model(settings.model)
+    _print_session_header(settings, objective)
+    state = _new_task_state(objective, args)
+    task_type = _determine_task_type(objective)
+
+    if task_type == "dangerous":
+        prompt = (
+            "This request appears to be dangerous. Confirm before any execution. "
+            "If you do not want to continue, answer no."
+        )
+        if not await _ask_user_approval(args, prompt):
+            state["final_status"] = "failed"
+            _print_orchestrator_summary(state)
+            return 2
+
+    state["current_phase"] = "context"
+    context_input = (
+        "Use repository inspection tools to gather only the files and snippets needed for the current task. "
+        f"User objective: {objective}"
+    )
+    context_result = await _run_named_agent(settings, client, args, context_input, "context_agent")
+    changed_files, commands_run = _collect_run_metrics(context_result)
+    state["changed_files"].extend(changed_files)
+    state["commands_run"].extend(commands_run)
+    state["completed_phases"].append("context")
+    state["repo_context"] = {"summary": context_result.final_message}
+
+    if task_type == "simple":
+        state["current_phase"] = "executor"
+        executor_input = (
+            "Implement the requested change using the approved task and the current repository state. "
+            f"User objective: {objective}\n\nContext:\n{context_result.final_message}"
+        )
+        executor_result = await _run_named_agent(settings, client, args, executor_input, "executor")
+        changed_files, commands_run = _collect_run_metrics(executor_result)
+        state["changed_files"].extend(changed_files)
+        state["commands_run"].extend(commands_run)
+        state["completed_phases"].append("executor")
+
+        state["current_phase"] = "reviewer"
+        reviewer_input = (
+            "Review the executor agent's implementation against the user request and the gathered context. "
+            f"User objective: {objective}\n\nExecutor output:\n{executor_result.final_message}"
+        )
+        reviewer_result = await _run_named_agent(settings, client, args, reviewer_input, "reviewer")
+        state["review_results"].append(reviewer_result.final_message)
+        state["completed_phases"].append("reviewer")
+
+        state["current_phase"] = "verifier"
+        verifier_input = (
+            "Verify the implementation against the original user request and the gathered context. "
+            f"User objective: {objective}\n\nExecutor output:\n{executor_result.final_message}"
+        )
+        verifier_result = await _run_named_agent(settings, client, args, verifier_input, "verifier")
+        state["verification_results"].append({
+            "phase": "initial",
+            "completed": verifier_result.completed,
+            "summary": verifier_result.final_message,
+        })
+        state["completed_phases"].append("verifier")
+
+        if not _verification_passed(verifier_result):
+            state["current_phase"] = "fixer"
+            fixer_input = (
+                "Fix the issues identified by the verifier. "
+                f"User objective: {objective}\n\nVerifier report:\n{verifier_result.final_message}"
+            )
+            fixer_result = await _run_named_agent(settings, client, args, fixer_input, "fixer")
+            state["fix_attempts"] += 1
+            changed_files, commands_run = _collect_run_metrics(fixer_result)
+            state["changed_files"].extend(changed_files)
+            state["commands_run"].extend(commands_run)
+            state["completed_phases"].append("fixer")
+
+            state["current_phase"] = "verifier"
+            verifier_result = await _run_named_agent(settings, client, args, verifier_input, "verifier")
+            state["verification_results"].append({
+                "phase": "fixer_retry",
+                "completed": verifier_result.completed,
+                "summary": verifier_result.final_message,
+            })
+
+        state["current_phase"] = "final_report"
+        final_report_input = (
+            "Summarize what was requested, what was implemented, files changed, commands run, tests or verification results, and any remaining issues. "
+            f"User objective: {objective}\n\nFinal state: {json.dumps(state, indent=2)[:4000]}"
+        )
+        final_report_result = await _run_named_agent(settings, client, args, final_report_input, "final_report_agent")
+        state["final_status"] = "success" if _verification_passed(verifier_result) else "failed"
+        state["current_phase"] = "completed"
+        _print_orchestrator_summary(state)
+        _print_final_report(final_report_result)
+        return 0 if state["final_status"] == "success" else 2
+
+    state["current_phase"] = "architect"
+    architect_input = (
+        "Analyze the repository and design a detailed architecture specification for the requested work. "
+        f"User objective: {objective}\n\nContext:\n{context_result.final_message}"
+    )
+    architect_result = await _run_named_agent(settings, client, args, architect_input, "architect")
+    state["spec"] = {"summary": architect_result.final_message}
+    changed_files, commands_run = _collect_run_metrics(architect_result)
+    state["changed_files"].extend(changed_files)
+    state["commands_run"].extend(commands_run)
+    state["completed_phases"].append("architect")
+
+    state["current_phase"] = "planner"
+    planner_input = (
+        "Convert the approved architecture specification into a concrete execution plan with phases, tasks, and verification checks. "
+        f"User objective: {objective}\n\nSpecification:\n{architect_result.final_message}"
+    )
+    planner_result = await _run_named_agent(settings, client, args, planner_input, "planner")
+    state["plan"] = {"summary": planner_result.final_message}
+    changed_files, commands_run = _collect_run_metrics(planner_result)
+    state["changed_files"].extend(changed_files)
+    state["commands_run"].extend(commands_run)
+    state["completed_phases"].append("planner")
+
+    if not await _ask_user_approval(args, planner_result.final_message):
+        state["final_status"] = "failed"
+        _print_orchestrator_summary(state)
+        return 2
+
+    state["current_phase"] = "executor"
+    executor_input = (
+        "Implement the approved plan exactly, making minimal safe changes and avoiding unrelated work. "
+        f"User objective: {objective}\n\nPlan:\n{planner_result.final_message}\n\nSpecification:\n{architect_result.final_message}"
+    )
+    executor_result = await _run_named_agent(settings, client, args, executor_input, "executor")
+    changed_files, commands_run = _collect_run_metrics(executor_result)
+    state["changed_files"].extend(changed_files)
+    state["commands_run"].extend(commands_run)
+    state["completed_phases"].append("executor")
+
+    state["current_phase"] = "reviewer"
+    reviewer_input = (
+        "Review the executor agent's implementation against the user request, approved spec, and approved plan. "
+        f"User objective: {objective}\n\nExecutor output:\n{executor_result.final_message}"
+    )
+    reviewer_result = await _run_named_agent(settings, client, args, reviewer_input, "reviewer")
+    state["review_results"].append(reviewer_result.final_message)
+    state["completed_phases"].append("reviewer")
+
+    state["current_phase"] = "verifier"
+    verifier_input = (
+        "Verify the implementation against the original user request, approved specification, and approved plan. "
+        f"User objective: {objective}\n\nExecutor output:\n{executor_result.final_message}"
+    )
+    verifier_result = await _run_named_agent(settings, client, args, verifier_input, "verifier")
+    state["verification_results"].append({
+        "phase": "initial",
+        "completed": verifier_result.completed,
+        "summary": verifier_result.final_message,
+    })
+    state["completed_phases"].append("verifier")
+
+    if not _verification_passed(verifier_result):
+        while state["fix_attempts"] < 3 and not _verification_passed(verifier_result):
+            state["current_phase"] = "fixer"
+            fixer_input = (
+                "Fix only the issues reported by the verifier. Do not change unrelated code. "
+                f"User objective: {objective}\n\nVerifier report:\n{verifier_result.final_message}"
+            )
+            fixer_result = await _run_named_agent(settings, client, args, fixer_input, "fixer")
+            state["fix_attempts"] += 1
+            changed_files, commands_run = _collect_run_metrics(fixer_result)
+            state["changed_files"].extend(changed_files)
+            state["commands_run"].extend(commands_run)
+            state["completed_phases"].append(f"fixer-{state['fix_attempts']}")
+
+            state["current_phase"] = "verifier"
+            verifier_result = await _run_named_agent(settings, client, args, verifier_input, "verifier")
+            state["verification_results"].append({
+                "phase": f"fixer_retry_{state['fix_attempts']}",
+                "completed": verifier_result.completed,
+                "summary": verifier_result.final_message,
+            })
+            if not _verification_passed(verifier_result) and state["fix_attempts"] >= 3:
+                break
+
+    state["current_phase"] = "final_report"
+    final_report_input = (
+        "Summarize what was requested, what was planned, what was implemented, "
+        "which files and commands changed, verification results, and any remaining issues. "
+        f"User objective: {objective}\n\nTask state:\n{json.dumps(state, indent=2)[:4000]}"
+    )
+    final_report_result = await _run_named_agent(settings, client, args, final_report_input, "final_report_agent")
+    state["final_status"] = "success" if _verification_passed(verifier_result) else "failed"
+    state["current_phase"] = "completed"
+    _print_orchestrator_summary(state)
+    _print_final_report(final_report_result)
+    return 0 if state["final_status"] == "success" else 2
+
+
+def _print_orchestrator_summary(state: dict) -> None:
+    lines = [
+        "Final orchestration summary:",
+        f"What was requested: {state['user_request']}",
+        f"Task type: {state.get('task_type', 'unknown')}",
+        f"Final status: {state['final_status']}",
+        "",
+        "Planned phases:",
+        *[f"- {phase}" for phase in state['completed_phases']],
+        "",
+        "Files changed:",
+        *[f"- {path}" for path in _normalize_list(state['changed_files'])],
+        "",
+        "Commands run:",
+        *[f"- {cmd}" for cmd in _normalize_list(state['commands_run'])],
+        "",
+        "Verification results:",
+        *[f"- {item['phase']}: {'passed' if item['completed'] else 'failed'}" for item in state['verification_results']],
+        "",
+        "Remaining issues:",
+        *[f"- {item['summary']}" for item in state['verification_results'] if not item['completed']],
+    ]
+    panel = Panel(Text("\n".join(lines), overflow="fold"), title="orchestrator summary", border_style="cyan", padding=(1, 2))
+    CONSOLE.print(panel)
 
 
 async def _run_cli_hooks(settings, event: str, payload: dict, *, console: Console = CONSOLE) -> list[HookResult]:
@@ -1161,6 +1875,16 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
     _print_repl_header(settings, console=console)
     approval = _interactive_approval(args)
     plan_mode = False
+    planner_mode = bool(args.planner)
+    executor_mode = bool(args.executor)
+    reviewer_mode = bool(args.reviewer)
+    verifier_mode = bool(args.verifier)
+    fixer_mode = bool(args.fixer)
+    memory_mode = bool(args.memory_agent)
+    context_mode = bool(args.context_agent)
+    command_mode = bool(args.command_agent)
+    final_report_mode = bool(args.final_report_agent)
+    architect_mode = bool(args.architect)
     session = _latest_session(settings) if resume_latest else None
     if session:
         settings = replace(settings, model=session.get("model") or settings.model)
@@ -1213,6 +1937,106 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
             state = "on" if plan_mode else "off"
             console.print(Panel(f"Plan mode is now [bold]{state}[/bold].", title="plan", border_style="yellow"))
             continue
+        if _is_planner_command(line):
+            if line == "/planner on":
+                planner_mode = True
+            elif line == "/planner off":
+                planner_mode = False
+            else:
+                planner_mode = not planner_mode
+            state = "on" if planner_mode else "off"
+            console.print(Panel(f"Planner mode is now [bold]{state}[/bold].", title="planner", border_style="blue"))
+            continue
+        if _is_executor_command(line):
+            if line == "/executor on":
+                executor_mode = True
+            elif line == "/executor off":
+                executor_mode = False
+            else:
+                executor_mode = not executor_mode
+            state = "on" if executor_mode else "off"
+            console.print(Panel(f"Executor mode is now [bold]{state}[/bold].", title="executor", border_style="red"))
+            continue
+        if _is_reviewer_command(line):
+            if line == "/reviewer on":
+                reviewer_mode = True
+            elif line == "/reviewer off":
+                reviewer_mode = False
+            else:
+                reviewer_mode = not reviewer_mode
+            state = "on" if reviewer_mode else "off"
+            console.print(Panel(f"Reviewer mode is now [bold]{state}[/bold].", title="reviewer", border_style="magenta"))
+            continue
+        if _is_verifier_command(line):
+            if line == "/verifier on":
+                verifier_mode = True
+            elif line == "/verifier off":
+                verifier_mode = False
+            else:
+                verifier_mode = not verifier_mode
+            state = "on" if verifier_mode else "off"
+            console.print(Panel(f"Verifier mode is now [bold]{state}[/bold].", title="verifier", border_style="purple"))
+            continue
+        if _is_memory_agent_command(line):
+            if line == "/memory-agent on":
+                memory_mode = True
+            elif line == "/memory-agent off":
+                memory_mode = False
+            else:
+                memory_mode = not memory_mode
+            state = "on" if memory_mode else "off"
+            console.print(Panel(f"Memory agent mode is now [bold]{state}[/bold].", title="memory agent", border_style="cyan"))
+            continue
+        if _is_context_agent_command(line):
+            if line == "/context-agent on":
+                context_mode = True
+            elif line == "/context-agent off":
+                context_mode = False
+            else:
+                context_mode = not context_mode
+            state = "on" if context_mode else "off"
+            console.print(Panel(f"Context agent mode is now [bold]{state}[/bold].", title="context agent", border_style="blue"))
+            continue
+        if _is_command_agent_command(line):
+            if line == "/command-agent on":
+                command_mode = True
+            elif line == "/command-agent off":
+                command_mode = False
+            else:
+                command_mode = not command_mode
+            state = "on" if command_mode else "off"
+            console.print(Panel(f"Command agent mode is now [bold]{state}[/bold].", title="command agent", border_style="green"))
+            continue
+        if _is_final_report_agent_command(line):
+            if line == "/final-report-agent on":
+                final_report_mode = True
+            elif line == "/final-report-agent off":
+                final_report_mode = False
+            else:
+                final_report_mode = not final_report_mode
+            state = "on" if final_report_mode else "off"
+            console.print(Panel(f"Final report agent mode is now [bold]{state}[/bold].", title="final report agent", border_style="green"))
+            continue
+        if _is_fixer_command(line):
+            if line == "/fixer on":
+                fixer_mode = True
+            elif line == "/fixer off":
+                fixer_mode = False
+            else:
+                fixer_mode = not fixer_mode
+            state = "on" if fixer_mode else "off"
+            console.print(Panel(f"Fixer mode is now [bold]{state}[/bold].", title="fixer", border_style="blue"))
+            continue
+        if _is_architect_command(line):
+            if line == "/architect on":
+                architect_mode = True
+            elif line == "/architect off":
+                architect_mode = False
+            else:
+                architect_mode = not architect_mode
+            state = "on" if architect_mode else "off"
+            console.print(Panel(f"Architect mode is now [bold]{state}[/bold].", title="architect", border_style="yellow"))
+            continue
         if line == "/init":
             created = _init_project(settings)
             body = "\n".join(str(path) for path in created) if created else "Project already has CodeClaw files."
@@ -1238,7 +2062,23 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
             _print_todos(session, console=console)
             continue
         if line == "/status":
-            _print_status(settings, args, plan_mode=plan_mode, session_id=session["id"], console=console)
+            _print_status(
+                settings,
+                args,
+                plan_mode=plan_mode,
+                planner_mode=planner_mode,
+                executor_mode=executor_mode,
+                reviewer_mode=reviewer_mode,
+                verifier_mode=verifier_mode,
+                fixer_mode=fixer_mode,
+                memory_mode=memory_mode,
+                context_mode=context_mode,
+                command_mode=command_mode,
+                final_report_mode=final_report_mode,
+                architect_mode=architect_mode,
+                session_id=session["id"],
+                console=console,
+            )
             continue
         if line == "/sessions":
             _print_sessions(settings, console=console)
@@ -1271,6 +2111,36 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
             continue
         if line == "/changes":
             await _print_changes(settings, console=console)
+            continue
+        if line == "/planner":
+            _print_planner_help(console=console)
+            continue
+        if line == "/executor":
+            _print_executor_help(console=console)
+            continue
+        if line == "/reviewer":
+            _print_reviewer_help(console=console)
+            continue
+        if line == "/verifier":
+            _print_verifier_help(console=console)
+            continue
+        if line == "/memory-agent":
+            _print_memory_agent_help(console=console)
+            continue
+        if line == "/context-agent":
+            _print_context_agent_help(console=console)
+            continue
+        if line == "/command-agent":
+            _print_command_agent_help(console=console)
+            continue
+        if line == "/final-report-agent":
+            _print_final_report_agent_help(console=console)
+            continue
+        if line == "/fixer":
+            _print_fixer_help(console=console)
+            continue
+        if line == "/architect":
+            _print_architect_help(console=console)
             continue
         if line == "/checkpoint" or line.startswith("/checkpoint "):
             checkpoint = _create_checkpoint(settings, _checkpoint_name_from_command(line))
@@ -1335,8 +2205,36 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
                 await client.show_model(settings.model)
             console.print(f"[dim]model ->[/dim] [cyan]{new_model}[/cyan]")
             continue
-        title = "plan objective" if plan_mode else "objective"
-        border = "yellow" if plan_mode else "green"
+        if executor_mode:
+            title = "executor objective"
+            border = "red"
+        elif fixer_mode:
+            title = "fixer objective"
+            border = "blue"
+        elif context_mode:
+            title = "context objective"
+            border = "blue"
+        elif command_mode:
+            title = "command objective"
+            border = "green"
+        elif memory_mode:
+            title = "memory objective"
+            border = "cyan"
+        elif reviewer_mode:
+            title = "reviewer objective"
+            border = "magenta"
+        elif verifier_mode:
+            title = "verifier objective"
+            border = "purple"
+        elif architect_mode:
+            title = "architect objective"
+            border = "magenta"
+        elif plan_mode:
+            title = "plan objective"
+            border = "yellow"
+        else:
+            title = "objective"
+            border = "green"
         console.print(Panel(Text(line, overflow="fold"), title=title, border_style=border))
         prompt_hooks = await _run_cli_hooks(
             settings,
@@ -1345,6 +2243,13 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
                 "session_id": session["id"],
                 "prompt": line,
                 "plan_mode": plan_mode,
+                "planner_mode": planner_mode,
+                "executor_mode": executor_mode,
+                "reviewer_mode": reviewer_mode,
+                "verifier_mode": verifier_mode,
+                "fixer_mode": fixer_mode,
+                "memory_mode": memory_mode,
+                "architect_mode": architect_mode,
                 "model": settings.model,
             },
             console=console,
@@ -1359,8 +2264,56 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
                 )
             )
             continue
-        approval_for_run = _plan_mode_approval(approval) if plan_mode else approval
-        objective = _plan_mode_objective(line) if plan_mode else _session_context(session, line)
+        approval_for_run = (
+            _plan_mode_approval(approval)
+            if plan_mode
+            else _planner_mode_approval(approval)
+            if planner_mode
+            else _executor_mode_approval(approval)
+            if executor_mode
+            else _fixer_mode_approval(approval)
+            if fixer_mode
+            else _context_mode_approval(approval)
+            if context_mode
+            else _command_mode_approval(approval)
+            if command_mode
+            else _final_report_mode_approval(approval)
+            if final_report_mode
+            else _memory_mode_approval(approval)
+            if memory_mode
+            else _reviewer_mode_approval(approval)
+            if reviewer_mode
+            else _verifier_mode_approval(approval)
+            if verifier_mode
+            else _architect_mode_approval(approval)
+            if architect_mode
+            else approval
+        )
+        objective = (
+            _plan_mode_objective(line)
+            if plan_mode
+            else _planner_mode_objective(line)
+            if planner_mode
+            else _executor_mode_objective(line)
+            if executor_mode
+            else _fixer_mode_objective(line)
+            if fixer_mode
+            else _context_mode_objective(line)
+            if context_mode
+            else _memory_mode_objective(line)
+            if memory_mode
+            else _command_mode_objective(line)
+            if command_mode
+            else _final_report_mode_objective(line)
+            if final_report_mode
+            else _reviewer_mode_objective(line)
+            if reviewer_mode
+            else _verifier_mode_objective(line)
+            if verifier_mode
+            else _architect_mode_objective(line)
+            if architect_mode
+            else _session_context(session, line)
+        )
         agent = CodeClawAgent(
             settings=settings,
             client=client,
@@ -1372,8 +2325,135 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
         except OllamaError as exc:
             console.print(f"[red]error: {exc}[/red]")
             continue
-        _append_session_turn(settings, session, line, result, plan_mode=plan_mode)
+        _append_session_turn(
+            settings,
+            session,
+            line,
+            result,
+            plan_mode=plan_mode,
+            planner_mode=planner_mode,
+            executor_mode=executor_mode,
+            reviewer_mode=reviewer_mode,
+            verifier_mode=verifier_mode,
+            fixer_mode=fixer_mode,
+            memory_mode=memory_mode,
+            context_mode=context_mode,
+            command_mode=command_mode,
+            final_report_mode=final_report_mode,
+            architect_mode=architect_mode,
+        )
         _print_final_report(result, console=console)
+
+
+def _print_planner_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Planner mode is a read-only planning mode. "
+                "Convert the architecture or specification into a concrete execution plan. "
+                "Do not write code, edit files, run shell commands, or commit changes. "
+                "Focus on breaking the work down into tasks, phases, dependencies, and verification steps."
+            ),
+            title="planner mode",
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
+
+
+def _print_executor_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Executor mode is an implementation-only mode. "
+                "Execute the approved task or phase exactly using the current repository state. "
+                "Do not propose new plans, change the objective, or make broad speculative changes. "
+                "Apply minimal safe edits and verify the requested result."
+            ),
+            title="executor mode",
+            border_style="red",
+            padding=(1, 2),
+        )
+    )
+
+
+def _print_reviewer_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Reviewer mode is review-only. "
+                "Inspect executor agent changes, report correctness, style, security, and architectural issues. "
+                "Do not edit files, write code, run shell commands, or commit changes. "
+                "Use repository inspection tools and discuss any problems clearly."
+            ),
+            title="reviewer mode",
+            border_style="magenta",
+            padding=(1, 2),
+        )
+    )
+
+
+def _print_verifier_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Verifier mode is a read-only verification mode. "
+                "Verify the implementation against the original user request, approved spec, and approved plan. "
+                "Do not edit files, write code, run shell commands, or commit changes. "
+                "Use read-only inspection tools and explain any mismatches clearly."
+            ),
+            title="verifier mode",
+            border_style="purple",
+            padding=(1, 2),
+        )
+    )
+
+
+def _print_memory_agent_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Memory Agent mode maintains project memory across tasks. "
+                "Capture repository structure, frameworks, conventions, important files, architecture decisions, and known problems. "
+                "Do not add new features, refactor unrelated code, or change the approved plan. "
+                "Use read-only inspection tools and summarize context for future tasks."
+            ),
+            title="memory agent mode",
+            border_style="cyan",
+            padding=(1, 2),
+        )
+    )
+
+
+def _print_context_agent_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Context Agent mode retrieves only the files and snippets needed for the current task. "
+                "Do not edit files, run shell commands, commit changes, or add new features. "
+                "Use repository inspection tools to gather the smallest relevant context and summarize it clearly."
+            ),
+            title="context agent mode",
+            border_style="blue",
+            padding=(1, 2),
+        )
+    )
+
+
+def _print_architect_help(*, console: Console = CONSOLE) -> None:
+    console.print(
+        Panel(
+            (
+                "Architect mode is an analysis-only mode. "
+                "Analyze the repository and design an implementation strategy. "
+                "Do not write code, edit files, run shell commands, or commit changes. "
+                "Use available inspection tools to answer the objective with architecture, specification, and clear next steps."
+            ),
+            title="architect mode",
+            border_style="magenta",
+            padding=(1, 2),
+        )
+    )
 
 
 def _print_final_report(result, console=None) -> None:
