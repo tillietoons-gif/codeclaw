@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codeclaw"
-version = "0.1.0"
+version = "0.3.0"
 description = "Autonomous Claude-Code-style software engineering agent powered by local Ollama"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,7 +51,7 @@ codeclaw = ["prompts/*.md", "tools/schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 asyncio_mode = "auto"
 addopts = "-ra -q"
 
