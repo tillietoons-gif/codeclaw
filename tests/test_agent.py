@@ -91,6 +91,23 @@ async def test_agent_logs_thinking_when_present(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_agent_hides_inline_tool_json_in_logs(tmp_path):
+    settings = replace(Settings(), project_dir=str(tmp_path), max_steps=5)
+    client = FakeClient([
+        _text_response(
+            "Here is the plan:\n```json\n{\"name\": \"list_dir\", \"arguments\": {\"path\": \".\"}}\n```\n"
+        )
+    ])
+    log_lines: list[str] = []
+    agent = CodeClawAgent(settings=settings, client=client, log=log_lines.append)
+    result = await agent.run("show directory")
+
+    assert result.completed
+    assert any("Here is the plan:" in line for line in log_lines)
+    assert not any('{"name"' in line for line in log_lines)
+
+
+@pytest.mark.asyncio
 async def test_agent_executes_tool_then_finishes(tmp_path):
     (tmp_path / "note.txt").write_text("hello")
     settings = replace(Settings(), project_dir=str(tmp_path), max_steps=5)

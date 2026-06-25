@@ -1,0 +1,152 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f4f6fb;
+  color: #1f2937;
+}
+
+header {
+  background: linear-gradient(135deg, #0f172a, #2563eb);
+  color: #ffffff;
+  text-align: center;
+  padding: 4rem 1.5rem;
+}
+
+header h1 {
+  margin: 0;
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+  line-height: 1.05;
+}
+
+main {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+}
+
+section {
+  margin-bottom: 2.5rem;
+}
+
+.hero-copy,
+.features,
+.testimonials,
+.contact {
+  background: #ffffff;
+  border-radius: 24px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
+  padding: 2rem;
+}
+
+.hero-copy p,
+.features p,
+.testimonials p,
+.contact p {
+  margin: 1rem 0 0;
+  line-height: 1.75;
+}
+
+.cta-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 1.75rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.95rem 1.8rem;
+  border-radius: 999px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-primary {
+  background-color: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 18px 40px rgba(37, 99, 235, 0.2);
+}
+
+.btn-secondary {
+  background-color: #e2e8f0;
+  color: #0f172a;
+}
+
+.btn:hover {
+  transform: translateY(-1px);
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.feature-card {
+  background: #f8fafc;
+  border-radius: 20px;
+  padding: 1.5rem;
+}
+
+.feature-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.85rem;
+}
+
+form {
+  display: grid;
+  gap: 1rem;
+}
+
+label {
+  font-weight: 600;
+}
+
+input,
+textarea {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  padding: 0.95rem 1rem;
+  background: #f8fafc;
+  font-size: 1rem;
+}
+
+button.submit-btn {
+  width: fit-content;
+  padding: 0.95rem 1.8rem;
+  border: none;
+  border-radius: 999px;
+  background-color: #2563eb;
+  color: #ffffff;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+footer {
+  text-align: center;
+  color: #64748b;
+  padding: 2rem 1.5rem;
+}
+
+@media (max-width: 860px) {
+  .features-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 540px) {
+  header {
+    padding: 3rem 1rem;
+  }
+  main {
+    padding: 2rem 1rem;
+  }
+}

@@ -258,9 +258,21 @@ class CodeClawAgent:
             return await result
         return result
 
+    def _looks_like_tool_json(self, line: str) -> bool:
+        stripped = line.strip()
+        if not stripped:
+            return False
+        if stripped.startswith("```"):
+            return True
+        if stripped.startswith("{") and ("\"name\"" in stripped or "\"arguments\"" in stripped):
+            return True
+        return False
+
     def _log_delta(self, kind: str, text: str) -> None:
         prefix = "  ?" if kind == "thinking" else "  >"
         for line in text.splitlines() or [text]:
+            if line and kind == "content" and self._looks_like_tool_json(line):
+                continue
             if line:
                 self.log(f"{prefix} {line}")
 
@@ -271,6 +283,8 @@ class CodeClawAgent:
                 self.log(f"  ? {line}")
         if resp.content and not streamed:
             for line in resp.content.splitlines() or [""]:
+                if line and self._looks_like_tool_json(line):
+                    continue
                 self.log(f"  > {line}")
         if resp.tool_calls:
             names = ", ".join(tc.name for tc in resp.tool_calls)
