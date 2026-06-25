@@ -604,6 +604,10 @@ def test_has_explicit_mode_detects_cli_flags():
     args = cli._build_parser().parse_args(["do thing"])
     assert not cli._has_explicit_mode(args)
 
+
+def test_determine_task_type_classifies_landing_page_as_complex():
+    assert cli._determine_task_type("create a well designed seo services landing page") == "complex"
+
 @pytest.mark.asyncio
 async def test_verifier_mode_approval_rejects_destructive_tools():
     async def approve(name, summary):

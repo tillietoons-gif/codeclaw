@@ -1101,7 +1101,8 @@ def _planner_mode_objective(objective: str) -> str:
     return (
         "PLANNER MODE: Convert the architect specification into a detailed execution plan. "
         "Break work into phases, tasks, dependencies, files to modify, and verification steps. "
-        "Do not write code. Focus on a sequence of concrete implementation actions.\n\n"
+        "Do not write code. Focus on a sequence of concrete implementation actions. "
+        "For each task, include the exact file names, intended content goals, and how success will be verified.\n\n"
         f"User objective: {objective}"
     )
 
@@ -1283,7 +1284,8 @@ def _executor_mode_objective(objective: str) -> str:
         "EXECUTOR MODE: Implement only the approved task or phase exactly. "
         "Use the current repository state and the approved plan. "
         "Do not propose new plans or change the objective. "
-        "Execute the approved task with minimal safe changes.\n\n"
+        "Execute the approved task with minimal safe changes. "
+        "If the plan requires creating or updating a landing page, write complete HTML/CSS and polished SEO copy in the target files.\n\n"
         f"User objective: {objective}"
     )
 
@@ -1297,7 +1299,7 @@ def _architect_mode_objective(objective: str) -> str:
     )
 
 
-def _ask_repl_line(console: Console) -> str:
+async def _ask_repl_line(console: Console) -> str:
     console.print(
         Panel(
             "[dim]Type a prompt, or use [bold]/help[/bold], [bold]/plan[/bold], "
@@ -1313,9 +1315,13 @@ def _ask_repl_line(console: Console) -> str:
 
         session = getattr(_ask_repl_line, "_session", None)
         if session is None:
-            session = PromptSession(history=InMemoryHistory(), multiline=True)
+            session = PromptSession(history=InMemoryHistory(), multiline=False)
             _ask_repl_line._session = session
-        return session.prompt("› ", multiline=True).strip()
+        try:
+            asyncio.get_running_loop()
+            return (await session.prompt_async("› ", multiline=False)).strip()
+        except RuntimeError:
+            return session.prompt("› ", multiline=False).strip()
     except ImportError:
         from rich.prompt import Prompt
 
@@ -1383,6 +1389,10 @@ def _is_context_agent_command(line: str) -> bool:
 
 def _is_command_agent_command(line: str) -> bool:
     return line in ("/command-agent on", "/command-agent off")
+
+
+def _is_final_report_agent_command(line: str) -> bool:
+    return line in ("/final-report-agent on", "/final-report-agent off")
 
 
 def _is_architect_command(line: str) -> bool:
@@ -1502,8 +1512,9 @@ def _determine_task_type(objective: str) -> str:
     dangerous = ["delete", "remove", "destroy", "rm -rf", "shutdown", "wipe", "format disk", "drop table", "kill ", "destroy", "uninstall"]
     if any(keyword in lower for keyword in dangerous):
         return "dangerous"
-    complex_keywords = ["design", "architecture", "specification", "plan", "refactor", "optimize", "migration", "migrate", "performance", "integrate", "security", "secure"]
-    if any(keyword in lower for keyword in complex_keywords):
+    complex_phrases = ["landing page", "website", "web page"]
+    complex_keywords = ["design", "architecture", "specification", "plan", "refactor", "optimize", "migration", "migrate", "performance", "integrate", "security", "secure", "seo", "create", "build", "copy", "content"]
+    if any(phrase in lower for phrase in complex_phrases) or any(keyword in lower for keyword in complex_keywords):
         return "complex"
     if len(objective.split()) < 12 and any(keyword in lower for keyword in ("add", "fix", "update", "implement", "correct", "patch")):
         return "simple"
@@ -1905,7 +1916,7 @@ async def _run_repl(settings, client, args, *, resume_latest: bool = False) -> i
     )
     while True:
         try:
-            line = _ask_repl_line(console)
+            line = await _ask_repl_line(console)
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]bye.[/dim]")
             await _run_cli_hooks(settings, "SessionEnd", {"session_id": session["id"], "reason": "interrupted"}, console=console)
