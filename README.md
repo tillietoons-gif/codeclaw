@@ -20,8 +20,25 @@ Destructive actions are gated behind explicit human approval by default.
 
 ## Install
 
+### Windows (PowerShell)
+
+```powershell
+cd C:\path\to\codeclaw
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .
+Copy-Item .env.example .env
+ollama pull qwen2.5-coder:14b
+codeclaw check
+codeclaw
+```
+
+Install a global launcher: `codeclaw install` (adds `%LOCALAPPDATA%\CodeClaw\bin` to PATH).
+
+### Linux / macOS
+
 ```bash
-cd /workspace/ollamacode
+cd codeclaw
 python3 -m venv .venv
 source .venv/bin/activate        # bash / zsh
 # . .venv/bin/activate           # POSIX sh (dash)
@@ -104,6 +121,41 @@ Resume the latest saved session from the current project:
 codeclaw continue
 ```
 
+Saved sessions store the **full conversation history** (not just summaries), so
+`/resume` and `continue` pick up where you left off. Use `/compact` to shrink
+older turn metadata when sessions grow large.
+
+Run logs are written to `.codeclaw/runs/<session-id>/*.jsonl` for debugging.
+
+### OpenAI-compatible backend
+
+Point CodeClaw at any OpenAI-compatible server (vLLM, LM Studio, etc.):
+
+```bash
+export CODECLAW_BACKEND=openai
+export CODECLAW_OPENAI_BASE_URL=http://127.0.0.1:8000/v1
+export CODECLAW_MODEL=your-model
+codeclaw
+```
+
+### Exec policy
+
+Configure allow/deny rules in `.codeclaw/settings.json`:
+
+```json
+{
+  "exec": {
+    "deny_patterns": ["rm -rf", "sudo"],
+    "allow_without_prompt": ["pytest", "ruff check"]
+  }
+}
+```
+
+### Custom plugin tools
+
+Drop Python files in `.codeclaw/tools/` that define `Tool` subclasses. They are
+loaded automatically at startup.
+
 Project hooks can be configured in `.codeclaw/settings.json`:
 
 ```json
@@ -129,18 +181,27 @@ tool (`a`), and deny (`n`).
 
 ## Tools
 
-| Tool          | Read/Write | Approval required |
-|---------------|-----------:|:-----------------:|
-| `read_file`   | read       | no                |
-| `list_dir`    | read       | no                |
-| `grep`        | read       | no                |
-| `git_status`  | read       | no                |
-| `git_diff`    | read       | no                |
-| `git_log`     | read       | no                |
-| `write_file`  | write      | **yes**           |
-| `edit_file`   | write      | **yes**           |
-| `exec`        | side-effect| **yes**           |
-| `git_commit`  | write      | **yes**           |
+| Tool           | Read/Write | Approval required |
+|----------------|-----------:|:-----------------:|
+| `read_file`    | read       | no                |
+| `list_dir`     | read       | no                |
+| `glob`         | read       | no                |
+| `grep`         | read       | no                |
+| `update_todo`  | read       | no                |
+| `git_status`   | read       | no                |
+| `git_diff`     | read       | no                |
+| `git_log`      | read       | no                |
+| `write_file`   | write      | **yes**           |
+| `edit_file`    | write      | **yes**           |
+| `apply_patch`  | write      | **yes**           |
+| `exec`         | side-effect| **yes**\*         |
+| `run_tests`    | side-effect| **yes**           |
+| `git_branch`   | write      | **yes**           |
+| `git_stash`    | write      | **yes**           |
+| `git_commit`   | write      | **yes**           |
+| `web_fetch`    | network    | **yes**           |
+
+\* `exec` can be allowlisted in `.codeclaw/settings.json` under `exec.allow_without_prompt`.
 
 ## How it works
 
@@ -188,7 +249,10 @@ All settings come from environment variables (or `.env`):
 
 | Variable                    | Default                    | Purpose                                  |
 |-----------------------------|----------------------------|------------------------------------------|
+| `CODECLAW_BACKEND`          | `ollama`                   | `ollama` or `openai` (compatible API)    |
 | `OLLAMA_HOST`               | `http://127.0.0.1:11434`   | Ollama server URL                        |
+| `CODECLAW_OPENAI_BASE_URL`  | `http://127.0.0.1:8000/v1` | OpenAI-compatible base URL               |
+| `CODECLAW_OPENAI_API_KEY`   | (empty)                    | API key for OpenAI-compatible backend    |
 | `CODECLAW_MODEL`            | `qwen2.5-coder:32b`        | Model name (must support `tools`)        |
 | `CODECLAW_MAX_STEPS`        | `40`                       | Hard cap on agent steps                  |
 | `CODECLAW_CONTEXT_TOKENS`   | `24000`                    | Sliding-window budget for prompt         |
@@ -224,7 +288,7 @@ build a single-file executable with [PyInstaller](https://pyinstaller.org/):
 
 ```bash
 # One-time setup (Linux/macOS):
-cd /workspace/ollamacode
+cd codeclaw
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"      # installs pyinstaller via the [dev] extra
